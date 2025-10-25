@@ -103,18 +103,27 @@ fn start_client(name: String, addr: String) {
 }
 
 fn main() {
+    print!("\x1b[2J"); // Clear terminal
+    print!("\x1b[H"); // Move cursor to start
+    std::io::stdout().flush().unwrap();
     let args: Vec<String> = std::env::args().collect();
 
-    match (args.get(1).map(|string| string.as_str()), args.get(2), args.get(3)) {
+    match (
+        args.get(1).map(|string| string.as_str()),
+        args.get(2),
+        args.get(3),
+    ) {
         (Some("server"), Some(addr), None) => {
             start_server_tunnel(addr.clone());
-        },
+        }
         (Some("client"), Some(name), Some(addr)) => {
             start_client(name.clone(), addr.clone());
         }
         _ => {
-            println!("Error: Arguments must be either \"server [address]\" or \"client [name] [address]\"");
-            return
+            println!(
+                "Error: Arguments must be either \"server [address]\" or \"client [name] [address]\""
+            );
+            return;
         }
     }
 }
