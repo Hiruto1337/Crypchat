@@ -1,0 +1,2 @@
+- Make written text move down on incoming messages
+- Clear the entire terminal when starting program
