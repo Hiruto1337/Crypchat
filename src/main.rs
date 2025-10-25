@@ -71,8 +71,8 @@ fn start_client(name: String, addr: String) {
         for line in reader.lines() {
             match line {
                 Ok(msg) => {
-                    let sender_index = msg.chars().position(|c| c == ':').unwrap();
-                    let (sender, msg) = msg.split_at(sender_index);
+                    let (sender, msg) = msg.split_once(':').unwrap();
+
                     if sender == name_clone {
                         print!("\x1b[1;32m");
                     } else {
@@ -105,25 +105,16 @@ fn start_client(name: String, addr: String) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let Some(user_type) = args.get(1) else {
-        panic!("First argument must be: [server|client]");
-    };
-
-    let addr = "127.0.0.1:8000".to_string();
-
-    match user_type.as_str() {
-        "server" => {
+    match (args.get(1).map(|string| string.as_str()), args.get(2), args.get(3)) {
+        (Some("server"), Some(addr), None) => {
             start_server_tunnel(addr.clone());
-        }
-        "client" => {
-            let Some(name) = args.get(2) else {
-                panic!("Clients must have a name!");
-            };
+        },
+        (Some("client"), Some(name), Some(addr)) => {
             start_client(name.clone(), addr.clone());
         }
         _ => {
-            println!("First argument must be either \"server\" or \"client\"");
-            return;
+            println!("Error: Arguments must be either \"server [address]\" or \"client [name] [address]\"");
+            return
         }
     }
 }
