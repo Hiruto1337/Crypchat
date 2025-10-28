@@ -1,8 +1,9 @@
 use std::{
-    io::{stdout, BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Write, stdout},
     net::{TcpListener, TcpStream},
     sync::{Arc, RwLock},
-    thread, time::Duration,
+    thread,
+    time::Duration,
 };
 
 struct Message {
@@ -83,21 +84,31 @@ fn start_server_tunnel(addr: String) {
 }
 
 fn start_client(name: String, addr: String) {
+    // Set scrolling region
+    let scroll_height = 42;
+    print!("\x1b[1;{scroll_height}r");
+    stdout().flush().unwrap();
+
+    // A function that sets cursor to neutral position
     let neutralize_cursor = || {
-        print!("\x1b[43;1H");
-        print!("Message: ");
+        print!("\x1b[44;1H");
+        print!(" Message: ");
+        print!("\x1b[0J"); // Delete from cursor to end of screen
         stdout().flush().unwrap();
     };
 
     neutralize_cursor();
 
     let mut messages: Vec<Message> = vec![];
+
     // Create thread that prints incoming lines
     let stream = Arc::new(TcpStream::connect(addr).unwrap());
     let stream_read = stream.clone();
     let stream_write = stream.clone();
     let name_clone = name.clone();
-    let mut message_position = 1;
+
+    // Create string that offsets messages with newlines XDXDXD
+    let mut newline_padding = "".to_string();
 
     thread::spawn(move || {
         let reader = BufReader::new(stream_read.as_ref());
@@ -116,16 +127,19 @@ fn start_client(name: String, addr: String) {
 
                     messages.push(message);
 
-                    // Save current cursor position
+                    // Save input cursor position
                     print!("\x1b[s");
-                    // Move cursor up to line position
-                    print!("\x1b[{message_position};1H");
-                    // Print the message
-                    print!(" {}", messages.last().unwrap());
-                    // Return to saved cursor position
+                    // Set cursor to top left corner
+                    print!("\x1b[1;1H");
+                    // Print newline padding and then message
+                    print!("{newline_padding} {}", messages.last().unwrap());
+                    // Restore input cursor position
                     print!("\x1b[u");
                     stdout().flush().unwrap();
-                    message_position += 1;
+                    // Only add a newline if we haven't reached scroll boundary yet
+                    if newline_padding.len() != scroll_height {
+                        newline_padding += "\n";
+                    }
                 }
                 Err(_) => println!("Error!"),
             }
@@ -139,8 +153,6 @@ fn start_client(name: String, addr: String) {
         match line {
             Ok(msg) => {
                 neutralize_cursor();
-                print!("\x1b[0J"); // Delete from cursor to end of screen
-                std::io::stdout().flush().unwrap();
                 if msg.len() != 0 {
                     let _ = writeln!(stream_write.as_ref(), "{name}: {msg}");
                 }
