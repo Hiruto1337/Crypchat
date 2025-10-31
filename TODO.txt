@@ -1,1 +1,0 @@
-- Make written text move down on incoming messages

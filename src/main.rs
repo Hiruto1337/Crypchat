@@ -1,10 +1,96 @@
 use std::{
     io::{BufRead, BufReader, Write, stdout},
     net::{TcpListener, TcpStream},
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     thread,
-    time::Duration,
 };
+
+use crossterm::{
+    cursor::{MoveLeft, MoveTo},
+    event::{Event, KeyCode, MouseEventKind},
+    execute,
+    style::Print,
+    terminal::{Clear, ClearType},
+};
+
+struct Terminal {
+    height: u16,
+    width: u16,
+    messages: Vec<Message>,
+    input_buffer: Vec<char>,
+    msg_offset: usize,
+}
+
+impl Terminal {
+    fn new() -> Self {
+        // Get terminal dimensions
+        let Ok((width, height)) = crossterm::terminal::size() else {
+            panic!("Couldn't read width and height of terminal!");
+        };
+
+        Terminal {
+            height,
+            width,
+            messages: vec![],
+            input_buffer: vec![],
+            msg_offset: 0,
+        }
+    }
+
+    fn get_input_position(&self) -> (u16, u16) {
+        (
+            (" Message: ".len() + self.input_buffer.len()) as u16,
+            self.height - 1,
+        )
+    }
+
+    fn draw(&self) {
+        // Use [scroll_pos] to get relevant messages
+        let input_height = 3;
+        let output_height = self.height - input_height;
+
+        let total_messages = self.messages.len();
+
+        let messages = if output_height < total_messages as u16 {
+            let lower_bound = total_messages - output_height as usize;
+            let upper_bound = total_messages;
+            let offset = self.msg_offset;
+            &self.messages[lower_bound - offset..upper_bound - offset]
+        } else {
+            &self.messages.as_slice()
+        };
+
+        // Clear entire screen
+        execute!(stdout(), Clear(ClearType::All)).unwrap();
+
+        // Move cursor to (0,0)
+        execute!(stdout(), MoveTo(0, 0)).unwrap();
+
+        // Draw messages
+        for (i, message) in messages.iter().enumerate() {
+            execute!(stdout(), MoveTo(0, i as u16), Print(message)).unwrap();
+        }
+
+        // Draw "separation bar" between messages and input space
+        let (_, y) = self.get_input_position();
+        execute!(stdout(), MoveTo(0, y - 2)).unwrap();
+        execute!(
+            stdout(),
+            Print((0..self.width).map(|_| '_').collect::<String>())
+        )
+        .unwrap();
+        // Draw input area
+        execute!(stdout(), MoveTo(0, y)).unwrap();
+        execute!(
+            stdout(),
+            Print(format!(
+                " Message: {}",
+                self.input_buffer.iter().collect::<String>()
+            ))
+        )
+        .unwrap();
+    }
+}
 
 struct Message {
     sender: String,
@@ -26,7 +112,7 @@ impl std::fmt::Display for Message {
             "\x1b[1;31m" // Set color to red
         };
 
-        write!(f, "{color}<{sender}>\x1b[0m{msg}")
+        write!(f, " {color}<{sender}>\x1b[0m{msg}")
     }
 }
 
@@ -84,32 +170,24 @@ fn start_server_tunnel(addr: String) {
 }
 
 fn start_client(name: String, addr: String) {
-    // Set scrolling region
-    let scroll_height = 42;
-    print!("\x1b[1;{scroll_height}r");
-    stdout().flush().unwrap();
+    // Enter raw mode and take full control of scrolling behavior
+    crossterm::terminal::enable_raw_mode().unwrap();
+    execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
 
-    // A function that sets cursor to neutral position
-    let neutralize_cursor = || {
-        print!("\x1b[44;1H");
-        print!(" Message: ");
-        print!("\x1b[0J"); // Delete from cursor to end of screen
-        stdout().flush().unwrap();
-    };
-
-    neutralize_cursor();
-
-    let mut messages: Vec<Message> = vec![];
-
-    // Create thread that prints incoming lines
+    // Connect to the server
     let stream = Arc::new(TcpStream::connect(addr).unwrap());
     let stream_read = stream.clone();
     let stream_write = stream.clone();
     let name_clone = name.clone();
 
-    // Create string that offsets messages with newlines XDXDXD
-    let mut newline_padding = "".to_string();
+    // Create the terminal representative
+    let terminal = Arc::new(Mutex::new(Terminal::new()));
+    let terminal_clone = terminal.clone();
 
+    // Draw initial UI
+    terminal.lock().unwrap().draw();
+
+    // Create thread that prints incoming lines
     thread::spawn(move || {
         let reader = BufReader::new(stream_read.as_ref());
 
@@ -125,48 +203,110 @@ fn start_client(name: String, addr: String) {
                         from_self: sender == name_clone.as_str(),
                     };
 
-                    messages.push(message);
+                    terminal_clone.lock().unwrap().messages.push(message);
 
-                    // Save input cursor position
-                    print!("\x1b[s");
-                    // Set cursor to top left corner
-                    print!("\x1b[1;1H");
-                    // Print newline padding and then message
-                    print!("{newline_padding} {}", messages.last().unwrap());
-                    // Restore input cursor position
-                    print!("\x1b[u");
-                    stdout().flush().unwrap();
-                    // Only add a newline if we haven't reached scroll boundary yet
-                    if newline_padding.len() != scroll_height {
-                        newline_padding += "\n";
-                    }
+                    terminal_clone.lock().unwrap().draw();
                 }
                 Err(_) => println!("Error!"),
             }
         }
     });
 
-    // Create stdin reader that sends user input to server
-    let stdin = std::io::stdin();
-
-    for line in stdin.lock().lines() {
-        match line {
-            Ok(msg) => {
-                neutralize_cursor();
-                if msg.len() != 0 {
-                    let _ = writeln!(stream_write.as_ref(), "{name}: {msg}");
+    // Listen for events...
+    loop {
+        match crossterm::event::read() {
+            Ok(Event::Key(key_event)) => match key_event.code {
+                KeyCode::Char(c) => {
+                    terminal.lock().unwrap().input_buffer.push(c);
+                    execute!(stdout(), Print(c)).unwrap();
                 }
-            }
-            Err(_) => println!("Error!"),
+                KeyCode::Backspace => {
+                    if let Some(_) = terminal.lock().unwrap().input_buffer.pop() {
+                        execute!(stdout(), MoveLeft(1), Print(" "), MoveLeft(1)).unwrap();
+                    }
+                }
+                KeyCode::Enter => {
+                    // Add a newline
+                    terminal.lock().unwrap().input_buffer.push('\n');
+
+                    // Convert input to string
+                    let input_string: String =
+                        terminal.lock().unwrap().input_buffer.iter().collect();
+
+                    // Quit app if the input is "/quit"
+                    if input_string == "/quit\n".to_string() {
+                        crossterm::terminal::disable_raw_mode().unwrap();
+                        execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
+                        break;
+                    }
+
+                    let message = format!("{name}: {input_string}");
+
+                    // Write message to stream
+                    write!(stream_write.as_ref(), "{message}",).unwrap();
+
+                    // Clear input_buffer
+                    terminal.lock().unwrap().input_buffer.clear();
+
+                    terminal.lock().unwrap().draw();
+                }
+                KeyCode::Up => match terminal.lock() {
+                    Ok(mut lock) => {
+                        let output_height = lock.height as usize - 3;
+                        if lock.msg_offset + output_height < lock.messages.len() {
+                            lock.msg_offset += 1;
+                            lock.draw();
+                        }
+                    }
+                    _ => {}
+                },
+                KeyCode::Down => match terminal.lock() {
+                    Ok(mut lock) => {
+                        if lock.msg_offset != 0 {
+                            lock.msg_offset -= 1;
+                            lock.draw();
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            },
+            Ok(Event::Resize(new_width, new_height)) => match terminal.lock() {
+                Ok(mut lock) => {
+                    lock.width = new_width;
+                    lock.height = new_height;
+                    lock.draw();
+                }
+                Err(_) => todo!(),
+            },
+            Ok(Event::Mouse(mouse_event)) => match mouse_event.kind {
+                MouseEventKind::ScrollDown => match terminal.lock() {
+                    Ok(mut lock) => {
+                        if lock.msg_offset != 0 {
+                            lock.msg_offset -= 1;
+                            lock.draw();
+                        }
+                    }
+                    _ => {}
+                },
+                MouseEventKind::ScrollUp => match terminal.lock() {
+                    Ok(mut lock) => {
+                        let output_height = lock.height as usize - 3;
+                        if lock.msg_offset + output_height < lock.messages.len() {
+                            lock.msg_offset += 1;
+                            lock.draw();
+                        }
+                    }
+                    _ => {}
+                },
+                _ => {}
+            },
+            _ => {}
         }
     }
 }
 
 fn main() {
-    // Clear terminal
-    std::process::Command::new("clear").spawn().unwrap();
-    std::thread::sleep(Duration::from_millis(50));
-
     let args: Vec<String> = std::env::args().collect();
 
     match (
