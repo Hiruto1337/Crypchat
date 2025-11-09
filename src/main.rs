@@ -1,13 +1,13 @@
 use std::{
-    io::{BufRead, BufReader, Write, stdout},
+    io::{BufRead, BufReader, LineWriter, Write, stdout},
     net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, RwLock, mpsc},
     thread,
 };
 
 use crossterm::{
     cursor::{MoveLeft, MoveTo},
-    event::{Event, KeyCode, MouseEventKind},
+    event::{Event as TerminalEvent, KeyCode, MouseEventKind},
     execute,
     style::Print,
     terminal::{Clear, ClearType},
@@ -17,8 +17,13 @@ struct Terminal {
     height: u16,
     width: u16,
     messages: Vec<Message>,
-    input_buffer: Vec<char>,
+    input_buffer: String,
     msg_offset: usize,
+}
+
+enum Event {
+    TerminalEvent(TerminalEvent),
+    MessageEvent(Message),
 }
 
 impl Terminal {
@@ -32,7 +37,7 @@ impl Terminal {
             height,
             width,
             messages: vec![],
-            input_buffer: vec![],
+            input_buffer: String::new(),
             msg_offset: 0,
         }
     }
@@ -81,14 +86,8 @@ impl Terminal {
         .unwrap();
         // Draw input area
         execute!(stdout(), MoveTo(0, y)).unwrap();
-        execute!(
-            stdout(),
-            Print(format!(
-                " Message: {}",
-                self.input_buffer.iter().collect::<String>()
-            ))
-        )
-        .unwrap();
+        execute!(stdout(), Print(format!(" Message: {}", &self.input_buffer)))
+            .unwrap();
     }
 }
 
@@ -117,7 +116,8 @@ impl std::fmt::Display for Message {
 }
 
 fn start_server_tunnel(addr: String) {
-    let clients: Arc<RwLock<Vec<(String, Arc<TcpStream>)>>> = Arc::new(RwLock::new(vec![]));
+    let clients: Arc<RwLock<Vec<(String, Arc<TcpStream>)>>> =
+        Arc::new(RwLock::new(vec![]));
     let clients = clients.clone();
 
     // Start listening for connections
@@ -152,12 +152,15 @@ fn start_server_tunnel(addr: String) {
                     match line {
                         Ok(msg) => {
                             println!("{msg}");
-                            clients.write().unwrap().iter().for_each(|client| {
-                                let _ = writeln!(client.1.as_ref(), "{msg}");
-                                // if client.0 != soc_addr.to_string() {
-                                //     let _ = writeln!(client.1.as_ref(), "{msg}");
-                                // }
-                            });
+                            clients.write().unwrap().iter().for_each(
+                                |client| {
+                                    let _ =
+                                        writeln!(client.1.as_ref(), "{msg}");
+                                    // if client.0 != soc_addr.to_string() {
+                                    //     let _ = writeln!(client.1.as_ref(), "{msg}");
+                                    // }
+                                },
+                            );
                         }
                         Err(_) => break,
                     }
@@ -171,139 +174,175 @@ fn start_server_tunnel(addr: String) {
 
 fn start_client(name: String, addr: String) {
     // Enter raw mode and take full control of scrolling behavior
-    crossterm::terminal::enable_raw_mode().unwrap();
-    execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
+    // crossterm::terminal::enable_raw_mode().unwrap();
+    // execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
 
     // Connect to the server
-    let stream = Arc::new(TcpStream::connect(addr).unwrap());
-    let stream_read = stream.clone();
-    let stream_write = stream.clone();
+    let s = TcpStream::connect(addr).unwrap();
+    let t = s.try_clone().unwrap();
+
+    let stream_read = BufReader::new(s);
+    let mut stream_write = LineWriter::new(t);
+
     let name_clone = name.clone();
 
     // Create the terminal representative
-    let terminal = Arc::new(Mutex::new(Terminal::new()));
-    let terminal_clone = terminal.clone();
+    let mut terminal = Terminal::new();
+
+    let (event_tx, event_rx) = mpsc::channel::<Event>();
 
     // Draw initial UI
-    terminal.lock().unwrap().draw();
+    terminal.draw();
+    //Consumer of messages
+    let event_consumer = thread::spawn(move || {
+        loop {
+            match event_rx.recv() {
+                Ok(event) => match event {
+                    Event::TerminalEvent(ev) => match ev {
+                        TerminalEvent::Key(key_event) => match key_event.code {
+                            KeyCode::Char(c) => {
+                                terminal.input_buffer.push(c);
+                                execute!(stdout(), Print(c)).unwrap();
+                            }
+                            KeyCode::Backspace => {
+                                if let Some(_) = terminal.input_buffer.pop() {
+                                    execute!(
+                                        stdout(),
+                                        MoveLeft(1),
+                                        Print(" "),
+                                        MoveLeft(1)
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                            KeyCode::Enter => {
+                                // Add a newline
+                                terminal.input_buffer.push('\n');
 
-    // Create thread that prints incoming lines
-    thread::spawn(move || {
-        let reader = BufReader::new(stream_read.as_ref());
+                                // Convert input to string
+                                let input_string: &str = &terminal.input_buffer;
 
-        for line in reader.lines() {
-            match line {
-                Ok(msg) => {
-                    // Save incoming message
-                    let (sender, msg) = msg.split_once(':').unwrap();
+                                // Quit app if the input is "/quit"
+                                if input_string == "/quit\n" {
+                                    crossterm::terminal::disable_raw_mode()
+                                        .unwrap();
+                                    execute!(
+                                    stdout(),
+                                    crossterm::terminal::LeaveAlternateScreen
+                                )
+                                    .unwrap();
+                                    break;
+                                }
 
-                    let message = Message {
-                        sender: sender.to_string(),
-                        msg: msg.to_string(),
-                        from_self: sender == name_clone.as_str(),
-                    };
+                                let message = format!("{name}: {input_string}");
 
-                    terminal_clone.lock().unwrap().messages.push(message);
+                                // Write message to stream
+                                write!(stream_write, "{message}",).unwrap();
 
-                    terminal_clone.lock().unwrap().draw();
+                                // Clear input_buffer
+                                terminal.input_buffer.clear();
+
+                                terminal.draw();
+                            }
+                            KeyCode::Up => {
+                                let output_height =
+                                    terminal.height as usize - 3;
+                                if terminal.msg_offset + output_height
+                                    < terminal.messages.len()
+                                {
+                                    terminal.msg_offset += 1;
+                                    terminal.draw();
+                                }
+                            }
+                            KeyCode::Down => {
+                                if terminal.msg_offset != 0 {
+                                    terminal.msg_offset -= 1;
+                                    terminal.draw();
+                                }
+                            }
+                            _ => {}
+                        },
+                        TerminalEvent::Resize(new_width, new_height) => {
+                            terminal.width = new_width;
+                            terminal.height = new_height;
+                            terminal.draw();
+                        }
+                        TerminalEvent::Mouse(mouse_event) => {
+                            match mouse_event.kind {
+                                MouseEventKind::ScrollDown => {
+                                    if terminal.msg_offset != 0 {
+                                        terminal.msg_offset -= 1;
+                                        terminal.draw();
+                                    }
+                                }
+                                MouseEventKind::ScrollUp => {
+                                    let output_height =
+                                        terminal.height as usize - 3;
+                                    if terminal.msg_offset + output_height
+                                        < terminal.messages.len()
+                                    {
+                                        terminal.msg_offset += 1;
+                                        terminal.draw();
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    },
+                    Event::MessageEvent(message) => {
+                        terminal.messages.push(message);
+                        terminal.draw();
+                    }
+                },
+                Err(err) => {
+                    println!("err: {}", err);
                 }
-                Err(_) => println!("Error!"),
             }
         }
     });
+    // Producer for MessageEvents
+    let message_producer = {
+        let event_tx = event_tx.clone();
 
-    // Listen for events...
-    loop {
-        match crossterm::event::read() {
-            Ok(Event::Key(key_event)) => match key_event.code {
-                KeyCode::Char(c) => {
-                    terminal.lock().unwrap().input_buffer.push(c);
-                    execute!(stdout(), Print(c)).unwrap();
+        thread::spawn(move || {
+            for line in stream_read.lines() {
+                match line {
+                    Ok(msg) => {
+                        execute!(stdout(), Print("haha")).unwrap();
+                        // Save incoming message
+                        let (sender, msg) = msg.split_once(':').unwrap();
+
+                        let message = Message {
+                            sender: sender.to_string(),
+                            msg: msg.to_string(),
+                            from_self: sender == name_clone.as_str(),
+                        };
+                        let _ = event_tx.send(Event::MessageEvent(message));
+                    }
+                    Err(_) => println!("Error!"),
                 }
-                KeyCode::Backspace => {
-                    if let Some(_) = terminal.lock().unwrap().input_buffer.pop() {
-                        execute!(stdout(), MoveLeft(1), Print(" "), MoveLeft(1)).unwrap();
+            }
+        })
+    };
+    //Producer for key board events
+    let terminal_producer = {
+        let event_tx = event_tx.clone();
+        thread::spawn(move || {
+            loop {
+                match crossterm::event::read() {
+                    Ok(ev) => {
+                        let _ = event_tx.send(Event::TerminalEvent(ev));
                     }
+                    Err(_) => {}
                 }
-                KeyCode::Enter => {
-                    // Add a newline
-                    terminal.lock().unwrap().input_buffer.push('\n');
+            }
+        })
+    };
+    event_consumer.join().unwrap();
+    message_producer.join().unwrap();
 
-                    // Convert input to string
-                    let input_string: String =
-                        terminal.lock().unwrap().input_buffer.iter().collect();
-
-                    // Quit app if the input is "/quit"
-                    if input_string == "/quit\n".to_string() {
-                        crossterm::terminal::disable_raw_mode().unwrap();
-                        execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
-                        break;
-                    }
-
-                    let message = format!("{name}: {input_string}");
-
-                    // Write message to stream
-                    write!(stream_write.as_ref(), "{message}",).unwrap();
-
-                    // Clear input_buffer
-                    terminal.lock().unwrap().input_buffer.clear();
-
-                    terminal.lock().unwrap().draw();
-                }
-                KeyCode::Up => match terminal.lock() {
-                    Ok(mut lock) => {
-                        let output_height = lock.height as usize - 3;
-                        if lock.msg_offset + output_height < lock.messages.len() {
-                            lock.msg_offset += 1;
-                            lock.draw();
-                        }
-                    }
-                    _ => {}
-                },
-                KeyCode::Down => match terminal.lock() {
-                    Ok(mut lock) => {
-                        if lock.msg_offset != 0 {
-                            lock.msg_offset -= 1;
-                            lock.draw();
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            },
-            Ok(Event::Resize(new_width, new_height)) => match terminal.lock() {
-                Ok(mut lock) => {
-                    lock.width = new_width;
-                    lock.height = new_height;
-                    lock.draw();
-                }
-                Err(_) => todo!(),
-            },
-            Ok(Event::Mouse(mouse_event)) => match mouse_event.kind {
-                MouseEventKind::ScrollDown => match terminal.lock() {
-                    Ok(mut lock) => {
-                        if lock.msg_offset != 0 {
-                            lock.msg_offset -= 1;
-                            lock.draw();
-                        }
-                    }
-                    _ => {}
-                },
-                MouseEventKind::ScrollUp => match terminal.lock() {
-                    Ok(mut lock) => {
-                        let output_height = lock.height as usize - 3;
-                        if lock.msg_offset + output_height < lock.messages.len() {
-                            lock.msg_offset += 1;
-                            lock.draw();
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            },
-            _ => {}
-        }
-    }
+    terminal_producer.join().unwrap();
 }
 
 fn main() {
