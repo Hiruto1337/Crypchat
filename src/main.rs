@@ -1,3 +1,5 @@
+pub mod crypto;
+
 use std::{
     io::{BufRead, BufReader, Write, stdout},
     net::{TcpListener, TcpStream},
@@ -5,6 +7,8 @@ use std::{
     thread,
 };
 
+use aes::{Aes128, cipher::KeyInit};
+use base64::Engine;
 use crossterm::{
     cursor::{MoveLeft, MoveTo},
     event::{Event, KeyCode, MouseEventKind},
@@ -13,12 +17,15 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 
+use crate::crypto::aes_cbc;
+
 struct Terminal {
     height: u16,
     width: u16,
     messages: Vec<Message>,
     input_buffer: Vec<char>,
     msg_offset: usize,
+    cipher: Option<Aes128>,
 }
 
 impl Terminal {
@@ -28,12 +35,17 @@ impl Terminal {
             panic!("Couldn't read width and height of terminal!");
         };
 
+        let key = *b"aesEncryptionKey";
+        let array = aes::cipher::Array::from(key);
+        let cipher = Aes128::new(&array);
+
         Terminal {
             height,
             width,
             messages: vec![],
             input_buffer: vec![],
             msg_offset: 0,
+            cipher: Some(cipher),
         }
     }
 
@@ -112,7 +124,7 @@ impl std::fmt::Display for Message {
             "\x1b[1;31m" // Set color to red
         };
 
-        write!(f, " {color}<{sender}>\x1b[0m{msg}")
+        write!(f, " {color}<{sender}> \x1b[0m{msg}")
     }
 }
 
@@ -153,10 +165,7 @@ fn start_server_tunnel(addr: String) {
                         Ok(msg) => {
                             println!("{msg}");
                             clients.write().unwrap().iter().for_each(|client| {
-                                let _ = writeln!(client.1.as_ref(), "{msg}");
-                                // if client.0 != soc_addr.to_string() {
-                                //     let _ = writeln!(client.1.as_ref(), "{msg}");
-                                // }
+                                writeln!(client.1.as_ref(), "{msg}").unwrap();
                             });
                         }
                         Err(_) => break,
@@ -193,19 +202,29 @@ fn start_client(name: String, addr: String) {
 
         for line in reader.lines() {
             match line {
-                Ok(msg) => {
+                Ok(incoming) => {
                     // Save incoming message
-                    let (sender, msg) = msg.split_once(':').unwrap();
+                    let (sender, msg) = incoming.split_once(':').unwrap();
 
-                    let message = Message {
-                        sender: sender.to_string(),
-                        msg: msg.to_string(),
-                        from_self: sender == name_clone.as_str(),
-                    };
+                    let mut lock = terminal_clone.lock().unwrap();
 
-                    terminal_clone.lock().unwrap().messages.push(message);
+                    if let Some(cipher) = &lock.cipher {
+                        let decoded: Vec<u8> = base64::engine::general_purpose::STANDARD
+                            .decode(msg)
+                            .unwrap();
 
-                    terminal_clone.lock().unwrap().draw();
+                        let decrypted = aes_cbc::decrypt(&decoded, cipher).into_iter().map(|v| v as char).collect();
+
+                        let message = Message {
+                            sender: sender.to_string(),
+                            msg: decrypted,
+                            from_self: sender == name_clone.as_str(),
+                        };
+
+                        lock.messages.push(message);
+
+                        lock.draw();
+                    }
                 }
                 Err(_) => println!("Error!"),
             }
@@ -226,29 +245,41 @@ fn start_client(name: String, addr: String) {
                     }
                 }
                 KeyCode::Enter => {
+                    // Get mutable mutex lock on terminal
+                    let mut lock = terminal.lock().unwrap();
+
                     // Add a newline
-                    terminal.lock().unwrap().input_buffer.push('\n');
+                    lock.input_buffer.push('\n');
 
                     // Convert input to string
                     let input_string: String =
-                        terminal.lock().unwrap().input_buffer.iter().collect();
+                        lock.input_buffer.iter().collect();
 
                     // Quit app if the input is "/quit"
-                    if input_string == "/quit\n".to_string() {
+                    if input_string == "/quit\n" {
                         crossterm::terminal::disable_raw_mode().unwrap();
                         execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
                         break;
                     }
+                    
+                    if let Some(cipher) = &lock.cipher {
+                        let bytes: Vec<u8> = input_string.chars().map(|c| c as u8).collect();
+                        
+                        let encrypted = aes_cbc::encrypt(&bytes, cipher);
 
-                    let message = format!("{name}: {input_string}");
+                        let encoded =
+                            base64::engine::general_purpose::STANDARD.encode(encrypted);
 
-                    // Write message to stream
-                    write!(stream_write.as_ref(), "{message}",).unwrap();
+                        let message = format!("{name}:{encoded}\n");
+
+                        // Write message to stream
+                        write!(stream_write.as_ref(), "{message}",).unwrap();
+                    }
 
                     // Clear input_buffer
-                    terminal.lock().unwrap().input_buffer.clear();
+                    lock.input_buffer.clear();
 
-                    terminal.lock().unwrap().draw();
+                    lock.draw();
                 }
                 KeyCode::Up => match terminal.lock() {
                     Ok(mut lock) => {
