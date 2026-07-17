@@ -135,47 +135,43 @@ fn start_server_tunnel(addr: String) {
     // Start listening for connections
     let listener = TcpListener::bind(addr).unwrap();
 
-    // Create a thread that handles new connections
-    let connection_handler = thread::spawn(move || {
-        loop {
-            let Ok((tcp_stream, soc_addr)) = listener.accept() else {
-                println!("Connection attempt failed...");
-                continue;
-            };
+    // Create a loop that handles new connections
+    loop {
+        let Ok((tcp_stream, soc_addr)) = listener.accept() else {
+            println!("Connection attempt failed...");
+            continue;
+        };
 
-            println!("{soc_addr} connected!");
+        println!("{soc_addr} connected!");
 
-            // Wrap the stream in an Arc<>
-            let stream = Arc::new(tcp_stream);
+        // Wrap the stream in an Arc<>
+        let stream = Arc::new(tcp_stream);
 
-            // Add stream to server clients
-            clients
-                .write()
-                .unwrap()
-                .push((soc_addr.to_string(), stream.clone()));
+        // Add stream to server clients
+        clients
+            .write()
+            .unwrap()
+            .push((soc_addr.to_string(), stream.clone()));
 
-            let clients = clients.clone();
+        let clients = clients.clone();
 
-            // Create a thread that listens for input from stream and broadcasts it to all clients
-            thread::spawn(move || {
-                let reader = BufReader::new(stream.as_ref());
+        // Create a thread that listens for input from stream and broadcasts it to all clients
+        thread::spawn(move || {
+            let reader = BufReader::new(stream.as_ref());
 
-                for line in reader.lines() {
-                    match line {
-                        Ok(msg) => {
-                            println!("{msg}");
-                            clients.write().unwrap().iter().for_each(|client| {
-                                writeln!(client.1.as_ref(), "{msg}").unwrap();
-                            });
-                        }
-                        Err(_) => break,
+            for line in reader.lines() {
+                match line {
+                    Ok(msg) => {
+                        println!("{msg}");
+                        clients.write().unwrap().iter().for_each(|client| {
+                            writeln!(client.1.as_ref(), "{msg}").unwrap();
+                        });
                     }
+                    Err(_) => break,
                 }
-            });
-        }
-    });
-
-    let _ = connection_handler.join();
+            }
+        });
+    }
 }
 
 fn start_client(name: String, addr: String) {
@@ -213,7 +209,10 @@ fn start_client(name: String, addr: String) {
                             .decode(msg)
                             .unwrap();
 
-                        let decrypted = aes_cbc::decrypt(&decoded, cipher).into_iter().map(|v| v as char).collect();
+                        let decrypted = aes_cbc::decrypt(&decoded, cipher)
+                            .into_iter()
+                            .map(|v| v as char)
+                            .collect();
 
                         let message = Message {
                             sender: sender.to_string(),
@@ -222,7 +221,6 @@ fn start_client(name: String, addr: String) {
                         };
 
                         lock.messages.push(message);
-
                         lock.draw();
                     }
                 }
@@ -252,8 +250,7 @@ fn start_client(name: String, addr: String) {
                     lock.input_buffer.push('\n');
 
                     // Convert input to string
-                    let input_string: String =
-                        lock.input_buffer.iter().collect();
+                    let input_string: String = lock.input_buffer.iter().collect();
 
                     // Quit app if the input is "/quit"
                     if input_string == "/quit\n" {
@@ -261,14 +258,13 @@ fn start_client(name: String, addr: String) {
                         execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
                         break;
                     }
-                    
+
                     if let Some(cipher) = &lock.cipher {
                         let bytes: Vec<u8> = input_string.chars().map(|c| c as u8).collect();
-                        
+
                         let encrypted = aes_cbc::encrypt(&bytes, cipher);
 
-                        let encoded =
-                            base64::engine::general_purpose::STANDARD.encode(encrypted);
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
 
                         let message = format!("{name}:{encoded}\n");
 
@@ -338,24 +334,22 @@ fn start_client(name: String, addr: String) {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args = std::env::args().skip(1);
 
     match (
-        args.get(1).map(|string| string.as_str()),
-        args.get(2),
-        args.get(3),
+        args.next(),
+        args.next(),
     ) {
-        (Some("server"), Some(addr), None) => {
+        (Some(addr), None) => {
             start_server_tunnel(addr.clone());
         }
-        (Some("client"), Some(name), Some(addr)) => {
+        (Some(addr), Some(name)) => {
             start_client(name.clone(), addr.clone());
         }
         _ => {
             println!(
-                "Error: Arguments must be either \"server [address]\" or \"client [name] [address]\""
+                "Error: Arguments must be \"[address] [name?]\""
             );
-            return;
         }
     }
 }
