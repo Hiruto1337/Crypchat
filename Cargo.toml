@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes = "0.9.1"
+base64 = "0.22.1"
 crossterm = "0.29.0"
+rand = "0.10.2"
