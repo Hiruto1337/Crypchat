@@ -260,74 +260,80 @@ fn start_client(name: String, addr: String) {
     // Listen for events...
     loop {
         match crossterm::event::read() {
-            Ok(Event::Key(key_event)) => match key_event.code {
-                KeyCode::Char(c) => {
-                    terminal.lock().unwrap().input_buffer.push(c);
-                    execute!(stdout(), Print(c)).unwrap();
+            Ok(Event::Key(key_event)) => {
+                if key_event.is_release() {
+                    continue;
                 }
-                KeyCode::Backspace => {
-                    if let Some(_) = terminal.lock().unwrap().input_buffer.pop() {
-                        execute!(stdout(), MoveLeft(1), Print(" "), MoveLeft(1)).unwrap();
+
+                match key_event.code {
+                    KeyCode::Char(c) => {
+                        terminal.lock().unwrap().input_buffer.push(c);
+                        execute!(stdout(), Print(c)).unwrap();
                     }
-                }
-                KeyCode::Enter => {
-                    // Get mutable mutex lock on terminal
-                    let mut lock = terminal.lock().unwrap();
-
-                    // Convert input to string
-                    let input_string: String = lock.input_buffer.iter().collect();
-
-                    if input_string == "" {
-                        continue;
+                    KeyCode::Backspace => {
+                        if let Some(_) = terminal.lock().unwrap().input_buffer.pop() {
+                            execute!(stdout(), MoveLeft(1), Print(" "), MoveLeft(1)).unwrap();
+                        }
                     }
+                    KeyCode::Enter => {
+                        // Get mutable mutex lock on terminal
+                        let mut lock = terminal.lock().unwrap();
 
-                    // Quit app if the input is "/quit"
-                    if input_string == "/quit" {
-                        crossterm::terminal::disable_raw_mode().unwrap();
-                        execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
-                        break;
-                    }
+                        // Convert input to string
+                        let input_string: String = lock.input_buffer.iter().collect();
 
-                    if let Some(cipher) = &lock.cipher {
-                        let bytes: Vec<u8> =
-                            (input_string + "\n").chars().map(|c| c as u8).collect();
+                        if input_string == "" {
+                            continue;
+                        }
 
-                        let encrypted = aes_cbc::encrypt(&bytes, cipher);
+                        // Quit app if the input is "/quit"
+                        if input_string == "/quit" {
+                            crossterm::terminal::disable_raw_mode().unwrap();
+                            execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
+                            break;
+                        }
 
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
+                        if let Some(cipher) = &lock.cipher {
+                            let bytes: Vec<u8> =
+                                (input_string + "\n").chars().map(|c| c as u8).collect();
 
-                        let message = format!("{name}:{encoded}\n");
+                            let encrypted = aes_cbc::encrypt(&bytes, cipher);
 
-                        // Write message to stream
-                        write!(stream_write2.as_ref(), "{message}",).unwrap();
+                            let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
 
-                        // Clear input_buffer
-                        lock.input_buffer.clear();
+                            let message = format!("{name}:{encoded}\n");
 
-                        lock.draw();
-                    }
-                }
-                KeyCode::Up => match terminal.lock() {
-                    Ok(mut lock) => {
-                        let output_height = lock.height as usize - 3;
-                        if lock.msg_offset + output_height < lock.messages.len() {
-                            lock.msg_offset += 1;
+                            // Write message to stream
+                            write!(stream_write2.as_ref(), "{message}",).unwrap();
+
+                            // Clear input_buffer
+                            lock.input_buffer.clear();
+
                             lock.draw();
                         }
                     }
-                    _ => {}
-                },
-                KeyCode::Down => match terminal.lock() {
-                    Ok(mut lock) => {
-                        if lock.msg_offset != 0 {
-                            lock.msg_offset -= 1;
-                            lock.draw();
+                    KeyCode::Up => match terminal.lock() {
+                        Ok(mut lock) => {
+                            let output_height = lock.height as usize - 3;
+                            if lock.msg_offset + output_height < lock.messages.len() {
+                                lock.msg_offset += 1;
+                                lock.draw();
+                            }
                         }
-                    }
+                        _ => {}
+                    },
+                    KeyCode::Down => match terminal.lock() {
+                        Ok(mut lock) => {
+                            if lock.msg_offset != 0 {
+                                lock.msg_offset -= 1;
+                                lock.draw();
+                            }
+                        }
+                        _ => {}
+                    },
                     _ => {}
-                },
-                _ => {}
-            },
+                }
+            }
             Ok(Event::Resize(new_width, new_height)) => match terminal.lock() {
                 Ok(mut lock) => {
                     lock.width = new_width;
