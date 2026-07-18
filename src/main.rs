@@ -17,7 +17,10 @@ use crossterm::{
     terminal::{Clear, ClearType},
 };
 
-use crate::crypto::aes_cbc;
+use crate::crypto::{
+    aes_cbc,
+    diffie_hellman::{Point, U576, get_elliptic_curve, get_generator_point, get_random_uint},
+};
 
 struct Terminal {
     height: u16,
@@ -26,6 +29,8 @@ struct Terminal {
     input_buffer: Vec<char>,
     msg_offset: usize,
     cipher: Option<Aes128>,
+    secret_number: U576,
+    ec_point: Point,
 }
 
 impl Terminal {
@@ -35,9 +40,9 @@ impl Terminal {
             panic!("Couldn't read width and height of terminal!");
         };
 
-        let key = *b"aesEncryptionKey";
-        let array = aes::cipher::Array::from(key);
-        let cipher = Aes128::new(&array);
+        let generator = get_generator_point();
+        let secret_number = get_random_uint();
+        let ec_point = get_elliptic_curve().get_point_from(generator, secret_number);
 
         Terminal {
             height,
@@ -45,7 +50,9 @@ impl Terminal {
             messages: vec![],
             input_buffer: vec![],
             msg_offset: 0,
-            cipher: Some(cipher),
+            cipher: None,
+            secret_number,
+            ec_point,
         }
     }
 
@@ -182,7 +189,8 @@ fn start_client(name: String, addr: String) {
     // Connect to the server
     let stream = Arc::new(TcpStream::connect(addr).unwrap());
     let stream_read = stream.clone();
-    let stream_write = stream.clone();
+    let stream_write1 = stream.clone();
+    let stream_write2 = stream.clone();
     let name_clone = name.clone();
 
     // Create the terminal representative
@@ -199,35 +207,55 @@ fn start_client(name: String, addr: String) {
         for line in reader.lines() {
             match line {
                 Ok(incoming) => {
-                    // Save incoming message
-                    let (sender, msg) = incoming.split_once(':').unwrap();
-
                     let mut lock = terminal_clone.lock().unwrap();
 
                     if let Some(cipher) = &lock.cipher {
-                        let decoded: Vec<u8> = base64::engine::general_purpose::STANDARD
-                            .decode(msg)
-                            .unwrap();
+                        // Save incoming message
+                        if let Some((sender, msg)) = incoming.split_once(':') {
+                            let decoded: Vec<u8> = base64::engine::general_purpose::STANDARD
+                                .decode(msg)
+                                .unwrap();
 
-                        let decrypted = aes_cbc::decrypt(&decoded, cipher)
-                            .into_iter()
-                            .map(|v| v as char)
-                            .collect();
+                            let decrypted = aes_cbc::decrypt(&decoded, cipher)
+                                .into_iter()
+                                .map(|v| v as char)
+                                .collect();
 
-                        let message = Message {
-                            sender: sender.to_string(),
-                            msg: decrypted,
-                            from_self: sender == name_clone.as_str(),
-                        };
+                            let message = Message {
+                                sender: sender.to_string(),
+                                msg: decrypted,
+                                from_self: sender == name_clone.as_str(),
+                            };
 
-                        lock.messages.push(message);
-                        lock.draw();
+                            lock.messages.push(message);
+                            lock.draw();
+                        }
+                    } else if incoming != lock.ec_point.to_string() {
+                        let (x, y) = incoming.split_once(';').unwrap();
+
+                        let received_ec_point = Point::from((x, y));
+                        let secret_shared_point = get_elliptic_curve()
+                            .get_point_from(received_ec_point, lock.secret_number);
+                        let x = secret_shared_point.get_x();
+                        let mut key: [u8; 16] = [0; 16];
+                        key.copy_from_slice(&sha256::digest(x.to_string()).as_bytes()[0..16]);
+
+                        let array = aes::cipher::Array::from(key);
+                        lock.cipher = Some(Aes128::new(&array));
+
+                        let ec_point_string = lock.ec_point.to_string();
+
+                        write!(stream_write1.as_ref(), "{ec_point_string}\n").unwrap();
                     }
                 }
                 Err(_) => println!("Error!"),
             }
         }
     });
+
+    // Announce elliptic curve point to server
+    let ec_point = terminal.lock().unwrap().ec_point.to_string();
+    write!(stream_write2.as_ref(), "{ec_point}\n").unwrap();
 
     // Listen for events...
     loop {
@@ -246,21 +274,19 @@ fn start_client(name: String, addr: String) {
                     // Get mutable mutex lock on terminal
                     let mut lock = terminal.lock().unwrap();
 
-                    // Add a newline
-                    lock.input_buffer.push('\n');
-
                     // Convert input to string
                     let input_string: String = lock.input_buffer.iter().collect();
 
                     // Quit app if the input is "/quit"
-                    if input_string == "/quit\n" {
+                    if input_string == "/quit" {
                         crossterm::terminal::disable_raw_mode().unwrap();
                         execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
                         break;
                     }
 
                     if let Some(cipher) = &lock.cipher {
-                        let bytes: Vec<u8> = input_string.chars().map(|c| c as u8).collect();
+                        let bytes: Vec<u8> =
+                            (input_string + "\n").chars().map(|c| c as u8).collect();
 
                         let encrypted = aes_cbc::encrypt(&bytes, cipher);
 
@@ -269,13 +295,13 @@ fn start_client(name: String, addr: String) {
                         let message = format!("{name}:{encoded}\n");
 
                         // Write message to stream
-                        write!(stream_write.as_ref(), "{message}",).unwrap();
+                        write!(stream_write2.as_ref(), "{message}",).unwrap();
+
+                        // Clear input_buffer
+                        lock.input_buffer.clear();
+
+                        lock.draw();
                     }
-
-                    // Clear input_buffer
-                    lock.input_buffer.clear();
-
-                    lock.draw();
                 }
                 KeyCode::Up => match terminal.lock() {
                     Ok(mut lock) => {
@@ -336,10 +362,7 @@ fn start_client(name: String, addr: String) {
 fn main() {
     let mut args = std::env::args().skip(1);
 
-    match (
-        args.next(),
-        args.next(),
-    ) {
+    match (args.next(), args.next()) {
         (Some(addr), None) => {
             start_server_tunnel(addr.clone());
         }
@@ -347,9 +370,7 @@ fn main() {
             start_client(name.clone(), addr.clone());
         }
         _ => {
-            println!(
-                "Error: Arguments must be \"[address] [name?]\""
-            );
+            println!("Error: Arguments must be \"[address] [name?]\"");
         }
     }
 }
