@@ -277,6 +277,10 @@ fn start_client(name: String, addr: String) {
                     // Convert input to string
                     let input_string: String = lock.input_buffer.iter().collect();
 
+                    if input_string == "" {
+                        continue;
+                    }
+
                     // Quit app if the input is "/quit"
                     if input_string == "/quit" {
                         crossterm::terminal::disable_raw_mode().unwrap();
