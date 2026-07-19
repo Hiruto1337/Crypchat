@@ -86,8 +86,18 @@ impl Terminal {
         execute!(stdout(), MoveTo(0, 0)).unwrap();
 
         // Draw messages
-        for (i, message) in messages.iter().enumerate() {
-            execute!(stdout(), MoveTo(0, i as u16), Print(message)).unwrap();
+        let mut offset = 0;
+
+        for message in messages.iter() {
+            if self.height - input_height <= offset {
+                break;
+            }
+
+            let msg_height = message.get_len() / (self.width + 1) + 1;
+
+            offset += msg_height;
+
+            execute!(stdout(), Print(message), MoveTo(0, offset)).unwrap();
         }
 
         // Draw "separation bar" between messages and input space
@@ -135,6 +145,12 @@ impl std::fmt::Display for Message {
     }
 }
 
+impl Message {
+    fn get_len(&self) -> u16 {
+        // 4 comes from ' ', '<', '>' and ' '
+        4 + self.sender.chars().count() as u16 + self.msg.chars().count() as u16
+    }
+}
 fn start_server_tunnel(addr: String) {
     let clients: Arc<RwLock<Vec<(String, Arc<TcpStream>)>>> = Arc::new(RwLock::new(vec![]));
     let clients = clients.clone();
@@ -216,7 +232,9 @@ fn start_client(name: String, addr: String) {
                                 .decode(msg)
                                 .unwrap();
 
-                            let decrypted = String::from_utf8(aes_cbc::decrypt(&decoded, cipher)).unwrap();
+                            let decrypted_vec = aes_cbc::decrypt(&decoded, cipher).into_iter().filter(|v| *v != b'\0').collect();
+
+                            let decrypted = String::from_utf8(decrypted_vec).unwrap();
 
                             let message = Message {
                                 sender: sender.to_string(),
@@ -264,6 +282,11 @@ fn start_client(name: String, addr: String) {
                 }
 
                 match key_event.code {
+                    KeyCode::Esc => {
+                        crossterm::terminal::disable_raw_mode().unwrap();
+                        execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
+                        break;
+                    }
                     KeyCode::Char(c) => {
                         terminal.lock().unwrap().input_buffer.push(c);
                         execute!(stdout(), Print(c)).unwrap();
@@ -284,16 +307,8 @@ fn start_client(name: String, addr: String) {
                             continue;
                         }
 
-                        // Quit app if the input is "/quit"
-                        if input_string == "/quit" {
-                            crossterm::terminal::disable_raw_mode().unwrap();
-                            execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
-                            break;
-                        }
-
                         if let Some(cipher) = &lock.cipher {
-                            let bytes: Vec<u8> =
-                                (input_string + "\n").into_bytes();
+                            let bytes: Vec<u8> = input_string.into_bytes();
 
                             let encrypted = aes_cbc::encrypt(&bytes, cipher);
 
