@@ -26,7 +26,7 @@ struct Terminal {
     height: u16,
     width: u16,
     messages: Vec<Message>,
-    input_buffer: Vec<char>,
+    input_buffer: String,
     msg_offset: usize,
     cipher: Option<Aes128>,
     secret_number: U576,
@@ -48,7 +48,7 @@ impl Terminal {
             height,
             width,
             messages: vec![],
-            input_buffer: vec![],
+            input_buffer: String::new(),
             msg_offset: 0,
             cipher: None,
             secret_number,
@@ -104,7 +104,7 @@ impl Terminal {
             stdout(),
             Print(format!(
                 " Message: {}",
-                self.input_buffer.iter().collect::<String>()
+                &self.input_buffer
             ))
         )
         .unwrap();
@@ -278,7 +278,7 @@ fn start_client(name: String, addr: String) {
                         let mut lock = terminal.lock().unwrap();
 
                         // Convert input to string
-                        let input_string: String = lock.input_buffer.iter().collect();
+                        let input_string = lock.input_buffer.trim().to_string();
 
                         if input_string == "" {
                             continue;
