@@ -216,10 +216,7 @@ fn start_client(name: String, addr: String) {
                                 .decode(msg)
                                 .unwrap();
 
-                            let decrypted = aes_cbc::decrypt(&decoded, cipher)
-                                .into_iter()
-                                .map(|v| v as char)
-                                .collect();
+                            let decrypted = String::from_utf8(aes_cbc::decrypt(&decoded, cipher)).unwrap();
 
                             let message = Message {
                                 sender: sender.to_string(),
@@ -237,6 +234,7 @@ fn start_client(name: String, addr: String) {
                         let secret_shared_point = get_elliptic_curve()
                             .get_point_from(received_ec_point, lock.secret_number);
                         let x = secret_shared_point.get_x();
+                        
                         let mut key: [u8; 16] = [0; 16];
                         key.copy_from_slice(&sha256::digest(x.to_string()).as_bytes()[0..16]);
 
@@ -295,7 +293,7 @@ fn start_client(name: String, addr: String) {
 
                         if let Some(cipher) = &lock.cipher {
                             let bytes: Vec<u8> =
-                                (input_string + "\n").chars().map(|c| c as u8).collect();
+                                (input_string + "\n").into_bytes();
 
                             let encrypted = aes_cbc::encrypt(&bytes, cipher);
 
