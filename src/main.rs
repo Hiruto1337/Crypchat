@@ -11,7 +11,7 @@ use aes::{Aes128, cipher::KeyInit};
 use base64::Engine;
 use crossterm::{
     cursor::{MoveLeft, MoveTo},
-    event::{Event, KeyCode, MouseEventKind},
+    event::{Event, KeyCode, KeyEvent, MouseEvent, MouseEventKind},
     execute,
     style::Print,
     terminal::{Clear, ClearType},
@@ -24,6 +24,7 @@ use crate::crypto::{
 
 struct Terminal {
     name: String,
+    stream: Arc<TcpStream>,
     height: u16,
     width: u16,
     messages: Vec<Message>,
@@ -35,7 +36,7 @@ struct Terminal {
 }
 
 impl Terminal {
-    fn new(name: String) -> Self {
+    fn new(name: String, stream: Arc<TcpStream>) -> Self {
         // Get terminal dimensions
         let Ok((width, height)) = crossterm::terminal::size() else {
             panic!("Couldn't read width and height of terminal!");
@@ -47,6 +48,7 @@ impl Terminal {
 
         Terminal {
             name,
+            stream,
             height,
             width,
             messages: vec![],
@@ -120,6 +122,142 @@ impl Terminal {
             ))
         )
         .unwrap();
+    }
+
+    fn send_ec_point(&mut self) {
+        let ec_point = self.ec_point.to_string();
+        write!(self.stream.as_ref(), "{ec_point}\n").unwrap();
+    }
+
+    fn create_cipher(&mut self, ec_point_string: String) {
+        let (x, y) = ec_point_string.split_once(';').unwrap();
+
+        let received_ec_point = Point::from((x, y));
+        let secret_shared_point = get_elliptic_curve()
+            .get_point_from(received_ec_point, self.secret_number);
+        let x = secret_shared_point.get_x();
+        
+        let mut key: [u8; 16] = [0; 16];
+        key.copy_from_slice(&sha256::digest(x.to_string()).as_bytes()[0..16]);
+
+        let array = aes::cipher::Array::from(key);
+        self.cipher = Some(Aes128::new(&array));
+    }
+
+    fn send_message(&mut self) {
+        let trimmed = self.input_buffer.trim().to_string();
+
+        if trimmed == "" {
+            return;
+        }
+
+        if let Some(cipher) = &self.cipher {
+            let bytes: Vec<u8> = trimmed.into_bytes();
+
+            let encrypted = aes_cbc::encrypt(&bytes, cipher);
+
+            let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
+
+            let message = format!("{}:{}\n", &self.name, encoded);
+
+            // Write message to stream
+            write!(self.stream.as_ref(), "{message}",).unwrap();
+
+            // Clear input_buffer
+            self.input_buffer.clear();
+
+            self.draw();
+        }
+    }
+
+    fn save_message(&mut self, message: String) {
+        let Some((sender, msg)) = message.split_once(':') else {
+            return;
+        };
+
+        let decoded: Vec<u8> = base64::engine::general_purpose::STANDARD
+            .decode(msg)
+            .unwrap();
+
+        let cipher = self.cipher.as_ref().unwrap();
+
+        let clean_decrypted_vec = aes_cbc::decrypt(&decoded, cipher)
+            .into_iter()
+            .filter(|v| *v != b'\0')
+            .collect();
+
+        let decrypted = String::from_utf8(clean_decrypted_vec).unwrap();
+
+        let message = Message {
+            sender: sender.to_string(),
+            msg: decrypted,
+            from_self: sender == &self.name,
+        };
+
+        self.messages.push(message);
+        self.draw();
+    }
+
+    fn scroll_up(&mut self) {
+        let output_height = self.height as usize - 3;
+        if self.msg_offset + output_height < self.messages.len() {
+            self.msg_offset += 1;
+            self.draw();
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        if self.msg_offset != 0 {
+            self.msg_offset -= 1;
+            self.draw();
+        }
+    }
+
+    fn handle_key_event(&mut self, key_event: KeyEvent) {
+        // Ignore key releases
+        if key_event.is_release() {
+            return;
+        }
+
+        match key_event.code {
+            KeyCode::Esc => {
+                crossterm::terminal::disable_raw_mode().unwrap();
+                execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
+                return;
+            }
+            KeyCode::Char(c) => {
+                // Add char to input buffer
+                self.input_buffer.push(c);
+                execute!(stdout(), Print(c)).unwrap();
+            }
+            KeyCode::Backspace => {
+                // Remove char from input buffer + Clear char in input
+                if let Some(_) = self.input_buffer.pop() {
+                    execute!(stdout(), MoveLeft(1), Print(" "), MoveLeft(1)).unwrap();
+                }
+            }
+            KeyCode::Enter => {
+                // Send message to server
+                self.send_message();
+            }
+            KeyCode::Up => self.scroll_up(),
+            KeyCode::Down => self.scroll_down(),
+            _ => {}
+        }
+    }
+
+    fn handle_resize(&mut self, new_width: u16, new_height: u16) {
+        self.width = new_width;
+        self.height = new_height;
+        self.draw();
+    }
+
+    fn handle_mouse_event(&mut self, mouse_event: MouseEvent) {
+        match mouse_event.kind {
+            MouseEventKind::ScrollDown => self.scroll_down(),
+            MouseEventKind::ScrollUp => self.scroll_up(),
+            _ => {}
+        }
     }
 }
 
@@ -205,178 +343,55 @@ fn start_client(name: String, addr: String) {
     execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
 
     // Connect to the server
-    let stream_origin = Arc::new(TcpStream::connect(addr).unwrap());
+    let stream = Arc::new(TcpStream::connect(addr).unwrap());
 
     // Create the terminal representative
-    let terminal = Arc::new(Mutex::new(Terminal::new(name)));
-    let terminal_clone = terminal.clone();
+    let terminal = Arc::new(Mutex::new(Terminal::new(name, stream)));
 
     // Draw initial UI
     terminal.lock().unwrap().draw();
 
-    // Create thread that prints incoming lines
-    let stream = stream_origin.clone();
+    // Create thread that reacts to incoming data
+    let terminal_clone = terminal.clone();
     thread::spawn(move || {
-        let reader = BufReader::new(stream.as_ref());
+        let read_stream = terminal_clone.lock().unwrap().stream.clone();
+        let reader = BufReader::new(read_stream.as_ref());
 
         for line in reader.lines() {
-            match line {
-                Ok(incoming) => {
-                    let mut lock = terminal_clone.lock().unwrap();
+            let Ok(incoming) = line else {
+                continue;
+            };
 
-                    if let Some(cipher) = &lock.cipher {
-                        // Save incoming message
-                        if let Some((sender, msg)) = incoming.split_once(':') {
-                            let decoded: Vec<u8> = base64::engine::general_purpose::STANDARD
-                                .decode(msg)
-                                .unwrap();
+            let mut lock = terminal_clone.lock().unwrap();
 
-                            let decrypted_vec = aes_cbc::decrypt(&decoded, cipher).into_iter().filter(|v| *v != b'\0').collect();
-
-                            let decrypted = String::from_utf8(decrypted_vec).unwrap();
-
-                            let message = Message {
-                                sender: sender.to_string(),
-                                msg: decrypted,
-                                from_self: sender == &lock.name,
-                            };
-
-                            lock.messages.push(message);
-                            lock.draw();
-                        }
-                    } else if incoming != lock.ec_point.to_string() {
-                        let (x, y) = incoming.split_once(';').unwrap();
-
-                        let received_ec_point = Point::from((x, y));
-                        let secret_shared_point = get_elliptic_curve()
-                            .get_point_from(received_ec_point, lock.secret_number);
-                        let x = secret_shared_point.get_x();
-                        
-                        let mut key: [u8; 16] = [0; 16];
-                        key.copy_from_slice(&sha256::digest(x.to_string()).as_bytes()[0..16]);
-
-                        let array = aes::cipher::Array::from(key);
-                        lock.cipher = Some(Aes128::new(&array));
-
-                        let ec_point_string = lock.ec_point.to_string();
-
-                        write!(stream.as_ref(), "{ec_point_string}\n").unwrap();
-                    }
-                }
-                Err(_) => println!("Error!"),
+            // Save message (if cipher exists)
+            if lock.cipher.is_some() {
+                lock.save_message(incoming);
+                continue;
             }
+
+            // Ignore my own EC point
+            if incoming == lock.ec_point.to_string() {
+                continue;
+            }
+
+            // Create cipher and reciprocate my own EC point
+            lock.create_cipher(incoming);
+            lock.send_ec_point();
         }
     });
 
     // Announce elliptic curve point to server
-    let stream = stream_origin.clone();
-    let ec_point = terminal.lock().unwrap().ec_point.to_string();
-    write!(stream.as_ref(), "{ec_point}\n").unwrap();
+    terminal.lock().unwrap().send_ec_point();
 
     // Listen for events...
     loop {
-        match crossterm::event::read() {
-            Ok(Event::Key(key_event)) => {
-                if key_event.is_release() {
-                    continue;
-                }
-
-                match key_event.code {
-                    KeyCode::Esc => {
-                        crossterm::terminal::disable_raw_mode().unwrap();
-                        execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
-                        break;
-                    }
-                    KeyCode::Char(c) => {
-                        terminal.lock().unwrap().input_buffer.push(c);
-                        execute!(stdout(), Print(c)).unwrap();
-                    }
-                    KeyCode::Backspace => {
-                        if let Some(_) = terminal.lock().unwrap().input_buffer.pop() {
-                            execute!(stdout(), MoveLeft(1), Print(" "), MoveLeft(1)).unwrap();
-                        }
-                    }
-                    KeyCode::Enter => {
-                        // Get mutable mutex lock on terminal
-                        let mut lock = terminal.lock().unwrap();
-
-                        // Convert input to string
-                        let input_string = lock.input_buffer.trim().to_string();
-
-                        if input_string == "" {
-                            continue;
-                        }
-
-                        if let Some(cipher) = &lock.cipher {
-                            let bytes: Vec<u8> = input_string.into_bytes();
-
-                            let encrypted = aes_cbc::encrypt(&bytes, cipher);
-
-                            let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
-
-                            let message = format!("{}:{}\n", &lock.name, encoded);
-
-                            // Write message to stream
-                            write!(stream.as_ref(), "{message}",).unwrap();
-
-                            // Clear input_buffer
-                            lock.input_buffer.clear();
-
-                            lock.draw();
-                        }
-                    }
-                    KeyCode::Up => match terminal.lock() {
-                        Ok(mut lock) => {
-                            let output_height = lock.height as usize - 3;
-                            if lock.msg_offset + output_height < lock.messages.len() {
-                                lock.msg_offset += 1;
-                                lock.draw();
-                            }
-                        }
-                        _ => {}
-                    },
-                    KeyCode::Down => match terminal.lock() {
-                        Ok(mut lock) => {
-                            if lock.msg_offset != 0 {
-                                lock.msg_offset -= 1;
-                                lock.draw();
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ => {}
-                }
-            }
-            Ok(Event::Resize(new_width, new_height)) => match terminal.lock() {
-                Ok(mut lock) => {
-                    lock.width = new_width;
-                    lock.height = new_height;
-                    lock.draw();
-                }
-                Err(_) => todo!(),
-            },
-            Ok(Event::Mouse(mouse_event)) => match mouse_event.kind {
-                MouseEventKind::ScrollDown => match terminal.lock() {
-                    Ok(mut lock) => {
-                        if lock.msg_offset != 0 {
-                            lock.msg_offset -= 1;
-                            lock.draw();
-                        }
-                    }
-                    _ => {}
-                },
-                MouseEventKind::ScrollUp => match terminal.lock() {
-                    Ok(mut lock) => {
-                        let output_height = lock.height as usize - 3;
-                        if lock.msg_offset + output_height < lock.messages.len() {
-                            lock.msg_offset += 1;
-                            lock.draw();
-                        }
-                    }
-                    _ => {}
-                },
-                _ => {}
-            },
+        let event = crossterm::event::read();
+        let mut lock = terminal.lock().unwrap();
+        match event {
+            Ok(Event::Key(key_event)) => lock.handle_key_event(key_event),
+            Ok(Event::Resize(new_width, new_height)) => lock.handle_resize(new_width, new_height),
+            Ok(Event::Mouse(mouse_event)) => lock.handle_mouse_event(mouse_event),
             _ => {}
         }
     }
