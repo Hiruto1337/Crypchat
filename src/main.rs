@@ -293,7 +293,6 @@ impl Message {
 }
 fn start_server_tunnel(addr: String) {
     let clients: Arc<RwLock<Vec<(String, Arc<TcpStream>)>>> = Arc::new(RwLock::new(vec![]));
-    let clients = clients.clone();
 
     // Start listening for connections
     let listener = TcpListener::bind(addr).unwrap();
