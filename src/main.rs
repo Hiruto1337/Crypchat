@@ -223,7 +223,7 @@ impl Terminal {
             KeyCode::Esc => {
                 crossterm::terminal::disable_raw_mode().unwrap();
                 execute!(stdout(), crossterm::terminal::LeaveAlternateScreen).unwrap();
-                return;
+                std::process::exit(0);
             }
             KeyCode::Char(c) => {
                 // Add char to input buffer
