@@ -82,7 +82,7 @@ impl Terminal {
 
             offset += msg_height;
 
-            execute!(stdout(), Print(message), MoveTo(0, offset)).unwrap();
+            execute!(stdout(), Print(message.to_string()), MoveTo(0, offset)).unwrap();
         }
     }
 
@@ -98,7 +98,7 @@ impl Terminal {
             MoveTo(0, self.height - 1),
             Clear(ClearType::CurrentLine),
             Print(format!(
-                " Message: {}",
+                "Message: {}",
                 &self.input_buffer
             ))
         )

@@ -14,8 +14,8 @@ impl From<(String, String, bool)> for Message {
     }
 }
 
-impl std::fmt::Display for Message {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl ToString for Message {
+    fn to_string(&self) -> String {
         let Message {
             sender,
             msg,
@@ -28,12 +28,12 @@ impl std::fmt::Display for Message {
             "\x1b[1;31m" // Set color to red
         };
 
-        write!(f, " {color}<{sender}> \x1b[0m{msg}")
+        format!("{color}<{sender}> \x1b[0m{msg}")
     }
 }
 
 impl Message {
     pub fn get_len(&self) -> u16 {
-        " <> ".len() as u16 + self.sender.chars().count() as u16 + self.msg.chars().count() as u16
+        "<> ".len() as u16 + self.sender.chars().count() as u16 + self.msg.chars().count() as u16
     }
 }
