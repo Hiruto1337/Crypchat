@@ -336,7 +336,7 @@ fn start_server_tunnel(addr: String) {
     }
 }
 
-fn start_client(name: String, addr: String) {
+fn start_client(addr: String, name: String) {
     // Enter raw mode and take full control of scrolling behavior
     crossterm::terminal::enable_raw_mode().unwrap();
     execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
@@ -404,7 +404,7 @@ fn main() {
             start_server_tunnel(addr);
         }
         (Some(addr), Some(name)) => {
-            start_client(name, addr);
+            start_client(addr, name);
         }
         _ => {
             println!("Error: Arguments must be \"[address] [name?]\"");
