@@ -23,6 +23,7 @@ use crate::crypto::{
 };
 
 struct Terminal {
+    name: String,
     height: u16,
     width: u16,
     messages: Vec<Message>,
@@ -34,7 +35,7 @@ struct Terminal {
 }
 
 impl Terminal {
-    fn new() -> Self {
+    fn new(name: String) -> Self {
         // Get terminal dimensions
         let Ok((width, height)) = crossterm::terminal::size() else {
             panic!("Couldn't read width and height of terminal!");
@@ -45,6 +46,7 @@ impl Terminal {
         let ec_point = get_elliptic_curve().get_point_from(generator, secret_number);
 
         Terminal {
+            name,
             height,
             width,
             messages: vec![],
@@ -207,10 +209,9 @@ fn start_client(name: String, addr: String) {
     let stream_read = stream.clone();
     let stream_write1 = stream.clone();
     let stream_write2 = stream.clone();
-    let name_clone = name.clone();
 
     // Create the terminal representative
-    let terminal = Arc::new(Mutex::new(Terminal::new()));
+    let terminal = Arc::new(Mutex::new(Terminal::new(name)));
     let terminal_clone = terminal.clone();
 
     // Draw initial UI
@@ -239,7 +240,7 @@ fn start_client(name: String, addr: String) {
                             let message = Message {
                                 sender: sender.to_string(),
                                 msg: decrypted,
-                                from_self: sender == name_clone.as_str(),
+                                from_self: sender == &lock.name,
                             };
 
                             lock.messages.push(message);
@@ -314,7 +315,7 @@ fn start_client(name: String, addr: String) {
 
                             let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
 
-                            let message = format!("{name}:{encoded}\n");
+                            let message = format!("{}:{}\n", &lock.name, encoded);
 
                             // Write message to stream
                             write!(stream_write2.as_ref(), "{message}",).unwrap();
@@ -387,10 +388,10 @@ fn main() {
 
     match (args.next(), args.next()) {
         (Some(addr), None) => {
-            start_server_tunnel(addr.clone());
+            start_server_tunnel(addr);
         }
         (Some(addr), Some(name)) => {
-            start_client(name.clone(), addr.clone());
+            start_client(name, addr);
         }
         _ => {
             println!("Error: Arguments must be \"[address] [name?]\"");
