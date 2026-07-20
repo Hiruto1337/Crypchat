@@ -205,10 +205,7 @@ fn start_client(name: String, addr: String) {
     execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
 
     // Connect to the server
-    let stream = Arc::new(TcpStream::connect(addr).unwrap());
-    let stream_read = stream.clone();
-    let stream_write1 = stream.clone();
-    let stream_write2 = stream.clone();
+    let stream_origin = Arc::new(TcpStream::connect(addr).unwrap());
 
     // Create the terminal representative
     let terminal = Arc::new(Mutex::new(Terminal::new(name)));
@@ -218,8 +215,9 @@ fn start_client(name: String, addr: String) {
     terminal.lock().unwrap().draw();
 
     // Create thread that prints incoming lines
+    let stream = stream_origin.clone();
     thread::spawn(move || {
-        let reader = BufReader::new(stream_read.as_ref());
+        let reader = BufReader::new(stream.as_ref());
 
         for line in reader.lines() {
             match line {
@@ -262,7 +260,7 @@ fn start_client(name: String, addr: String) {
 
                         let ec_point_string = lock.ec_point.to_string();
 
-                        write!(stream_write1.as_ref(), "{ec_point_string}\n").unwrap();
+                        write!(stream.as_ref(), "{ec_point_string}\n").unwrap();
                     }
                 }
                 Err(_) => println!("Error!"),
@@ -271,8 +269,9 @@ fn start_client(name: String, addr: String) {
     });
 
     // Announce elliptic curve point to server
+    let stream = stream_origin.clone();
     let ec_point = terminal.lock().unwrap().ec_point.to_string();
-    write!(stream_write2.as_ref(), "{ec_point}\n").unwrap();
+    write!(stream.as_ref(), "{ec_point}\n").unwrap();
 
     // Listen for events...
     loop {
@@ -318,7 +317,7 @@ fn start_client(name: String, addr: String) {
                             let message = format!("{}:{}\n", &lock.name, encoded);
 
                             // Write message to stream
-                            write!(stream_write2.as_ref(), "{message}",).unwrap();
+                            write!(stream.as_ref(), "{message}",).unwrap();
 
                             // Clear input_buffer
                             lock.input_buffer.clear();
