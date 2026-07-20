@@ -94,14 +94,12 @@ fn start_client(addr: String, name: String) {
                 continue;
             }
 
-            // Ignore my own EC point
-            if incoming == lock.ec_point.to_string() {
-                continue;
+            // If incoming EC point is not my own
+            if incoming != lock.ec_point.to_string() {
+                // Create cipher and reciprocate my own EC point
+                lock.create_cipher(incoming);
+                lock.send_ec_point();
             }
-
-            // Create cipher and reciprocate my own EC point
-            lock.create_cipher(incoming);
-            lock.send_ec_point();
         }
     });
 
