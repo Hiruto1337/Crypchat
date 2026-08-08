@@ -8,13 +8,9 @@ use std::{
     thread,
 };
 
+use crossterm::{cursor::EnableBlinking, event::Event, execute};
 
-use crossterm::{
-    event::Event,
-    execute,
-};
-
-use crate::{misc::terminal::Terminal};
+use crate::misc::terminal::Terminal;
 
 fn start_server_tunnel(addr: String) {
     let clients: Arc<RwLock<Vec<(String, Arc<TcpStream>)>>> = Arc::new(RwLock::new(vec![]));
@@ -64,7 +60,12 @@ fn start_server_tunnel(addr: String) {
 fn start_client(addr: String, name: String) {
     // Enter raw mode and take full control of scrolling behavior
     crossterm::terminal::enable_raw_mode().unwrap();
-    execute!(stdout(), crossterm::terminal::EnterAlternateScreen).unwrap();
+    execute!(
+        stdout(),
+        crossterm::terminal::EnterAlternateScreen,
+        EnableBlinking
+    )
+    .unwrap();
 
     // Connect to the server
     let stream = Arc::new(TcpStream::connect(addr).unwrap());

@@ -1,19 +1,32 @@
-use std::{io::{Write, stdout}, net::TcpStream, sync::Arc};
+use std::{
+    io::{Write, stdout},
+    net::TcpStream,
+    sync::Arc,
+};
 
 use aes::{Aes128, cipher::KeyInit};
 use base64::Engine;
-use crossterm::{cursor::MoveTo, event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind}, execute, style::Print, terminal::{Clear, ClearType}};
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    event::{KeyCode, KeyEvent, MouseEvent, MouseEventKind},
+    execute,
+    style::Print,
+    terminal::{Clear, ClearType},
+};
 
-use crate::{crypto::{aes_cbc, diffie_hellman::*}, misc::message::Message};
+use crate::crypto::{aes_cbc, diffie_hellman::*};
 
 pub struct Terminal {
     pub name: String,
     pub stream: Arc<TcpStream>,
+    pub current_writer: Option<String>,
     pub height: u16,
     pub width: u16,
-    pub messages: Vec<Message>,
+    pub input_height: u16,
+    pub messages: Vec<String>,
+    pub top_reached: bool,
     pub input_buffer: String,
-    pub msg_offset: usize,
+    pub scroll: usize,
     pub cipher: Option<Aes128>,
     pub secret_number: U576,
     pub ec_point: Point,
@@ -23,7 +36,7 @@ impl From<(String, Arc<TcpStream>)> for Terminal {
     fn from(value: (String, Arc<TcpStream>)) -> Self {
         let (name, stream) = value;
         let (width, height) = crossterm::terminal::size().unwrap();
-        
+
         // Elliptic curve data
         let generator = get_generator_point();
         let secret_number = get_random_uint();
@@ -32,11 +45,14 @@ impl From<(String, Arc<TcpStream>)> for Terminal {
         Terminal {
             name,
             stream,
+            current_writer: None,
             height,
             width,
+            input_height: 2,
             messages: vec![],
+            top_reached: true,
             input_buffer: String::new(),
-            msg_offset: 0,
+            scroll: 0,
             cipher: None,
             secret_number,
             ec_point,
@@ -45,62 +61,107 @@ impl From<(String, Arc<TcpStream>)> for Terminal {
 }
 
 impl Terminal {
+    fn get_string_height(&self, message: &String) -> usize {
+        message.len() / self.width as usize + 1
+    }
+
+    fn update_input_height(&mut self) {
+        let input_height =
+            self.get_string_height(&(self.input_buffer.clone() + "Message: ")) as u16;
+
+        // Add 1 to accomodate the separator line
+        self.input_height = 1 + input_height;
+    }
+
+    fn get_input_coordinates(&self) -> (u16, u16) {
+        let input_x = ("Message: ".len() + self.input_buffer.len()) % self.width as usize;
+
+        let input_height = self.get_string_height(&(self.input_buffer.clone() + "Message: "));
+        let input_y = self.height - self.input_height + input_height as u16;
+
+        (input_x as u16, input_y)
+    }
+
     pub fn draw(&mut self) {
+        self.update_input_height();
+        execute!(stdout(), Hide).unwrap();
         self.draw_messages();
         self.draw_input_area();
+        execute!(stdout(), Show).unwrap();
     }
 
     pub fn draw_messages(&mut self) {
-        // Use [scroll_pos] to get relevant messages
-        let input_height = 3;
-        let output_height = self.height - input_height;
+        // Track remaining screen estate
+        let output_height = self.height - self.input_height;
+        let mut rem_height = output_height + 1;
+        let mut rem_scroll = self.scroll;
 
-        let total_messages = self.messages.len();
+        // Collect the relevant messages
+        let mut lines: Vec<String> = vec![];
 
-        // NOTE: Not all messages are only 1 line long
-        let messages = if output_height < total_messages as u16 {
-            let lower_bound = total_messages - output_height as usize;
-            let upper_bound = total_messages;
-            let offset = self.msg_offset;
-            &self.messages[lower_bound - offset..upper_bound - offset]
-        } else {
-            &self.messages.as_slice()
-        };
-
-        // Clear message area
-        execute!(stdout(), MoveTo(0, self.height - 3), Clear(ClearType::FromCursorUp), MoveTo(0, 0)).unwrap();
-
-        // Draw messages
-        let mut offset = 0;
-
-        for message in messages.iter() {
-            if self.height - input_height <= offset {
-                break;
+        'msg_loop: for message in self.messages.iter().rev() {
+            // Skip unnecessary messages
+            let msg_height = self.get_string_height(message);
+            if msg_height <= rem_scroll {
+                rem_scroll -= msg_height;
+                continue;
             }
 
-            let msg_height = message.get_len() / (self.width + 1) + 1;
+            let chars: Vec<char> = message.chars().collect();
+            let msg_lines = chars.chunks(self.width as usize);
 
-            offset += msg_height;
+            // Add them to [lines] in reverse
+            for line in msg_lines.rev() {
+                // Skip unnecessary lines
+                if rem_scroll != 0 {
+                    rem_scroll -= 1;
+                    continue;
+                }
 
-            execute!(stdout(), Print(message.to_string()), MoveTo(0, offset)).unwrap();
+                if rem_height == 0 {
+                    break 'msg_loop;
+                }
+
+                lines.push(line.iter().collect());
+                rem_height -= 1;
+            }
         }
+
+        if rem_height == 0 {
+            self.top_reached = false;
+            let _ = lines.pop();
+        } else {
+            self.top_reached = true;
+        }
+
+        lines.reverse();
+
+        let output = lines
+            .into_iter()
+            .fold(String::new(), |acc, line| acc + line.as_str() + "\r\n");
+
+        // Print result
+        let (input_x, input_y) = self.get_input_coordinates();
+        execute!(
+            stdout(),
+            MoveTo(self.width, output_height - 1),
+            Clear(ClearType::FromCursorUp),
+            MoveTo(0, 0),
+            Print(output),
+            MoveTo(input_x, input_y)
+        )
+        .unwrap();
     }
 
     pub fn draw_input_area(&mut self) {
-        // NOTE: Needs fixing (breaks on multi-line input)
         execute!(
             stdout(),
             // Draw separator line
-            MoveTo(0, self.height - 3),
+            MoveTo(0, self.height - self.input_height),
             Clear(ClearType::FromCursorDown),
             Print((0..self.width).map(|_| '_').collect::<String>()),
             // Draw input area
-            MoveTo(0, self.height - 1),
-            Clear(ClearType::CurrentLine),
-            Print(format!(
-                "Message: {}",
-                &self.input_buffer
-            ))
+            Print(format!("Message: {}", &self.input_buffer))
         )
         .unwrap();
     }
@@ -114,10 +175,10 @@ impl Terminal {
         let (x, y) = ec_point_string.split_once(';').unwrap();
 
         let received_ec_point = Point::from((x, y));
-        let secret_shared_point = get_elliptic_curve()
-            .get_point_from(received_ec_point, self.secret_number);
+        let secret_shared_point =
+            get_elliptic_curve().get_point_from(received_ec_point, self.secret_number);
         let x = secret_shared_point.get_x();
-        
+
         let mut key: [u8; 16] = [0; 16];
         key.copy_from_slice(&sha256::digest(x.to_string()).as_bytes()[0..16]);
 
@@ -146,7 +207,6 @@ impl Terminal {
 
             // Clear input_buffer
             self.input_buffer.clear();
-
             self.draw();
         }
     }
@@ -169,23 +229,35 @@ impl Terminal {
 
         let decrypted = String::from_utf8(clean_decrypted_vec).unwrap();
 
-        let message = Message::from((sender.to_string(), decrypted, sender == self.name));
+        if let Some(msg_sender) = &self.current_writer
+            && &sender == msg_sender
+        {
+            // Do nothing
+        } else {
+            self.current_writer = Some(sender.to_string());
+            let color = if &sender == &self.name {
+                "\x1b[1;32m" // Set color to green
+            } else {
+                "\x1b[1;31m" // Set color to red
+            };
 
-        self.messages.push(message);
+            self.messages.push(format!("{color}<{sender}>\x1b[0m"));
+        }
+
+        self.messages.push(decrypted);
         self.draw();
     }
 
     fn scroll_up(&mut self) {
-        let output_height = self.height as usize - 3;
-        if self.msg_offset + output_height < self.messages.len() {
-            self.msg_offset += 1;
+        if self.top_reached == false {
+            self.scroll += 1;
             self.draw();
         }
     }
 
     fn scroll_down(&mut self) {
-        if self.msg_offset != 0 {
-            self.msg_offset -= 1;
+        if self.scroll != 0 {
+            self.scroll -= 1;
             self.draw();
         }
     }
@@ -205,17 +277,18 @@ impl Terminal {
             KeyCode::Char(c) => {
                 // Add char to input buffer
                 self.input_buffer.push(c);
-                self.draw_input_area();
+                self.draw();
             }
             KeyCode::Backspace => {
                 // Remove char from input buffer + Clear char in input
-                if let Some(_) = self.input_buffer.pop() {
-                    self.draw_input_area();
+                if self.input_buffer.pop().is_some() {
+                    self.draw();
                 }
             }
             KeyCode::Enter => {
                 // Send message to server
                 self.send_message();
+                self.draw();
             }
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
@@ -224,6 +297,10 @@ impl Terminal {
     }
 
     pub fn handle_resize(&mut self, new_width: u16, new_height: u16) {
+        if self.height < new_height {
+            self.scroll = 0;
+        }
+
         self.width = new_width;
         self.height = new_height;
         self.draw();
