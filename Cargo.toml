@@ -5,8 +5,11 @@ edition = "2024"
 
 [dependencies]
 aes = "0.9.1"
+anyhow = "1.0.104"
 base64 = "0.22.1"
 crossterm = "0.29.0"
+iroh = "1.0.3"
 rand = "0.10.2"
 sha256 = "1.6.0"
+tokio = "1.53.1"
 uint = "0.10.0"
