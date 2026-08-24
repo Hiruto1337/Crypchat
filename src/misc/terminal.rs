@@ -1,10 +1,7 @@
-use std::{
-    io::{Write, stdout},
-    net::TcpStream,
-    sync::Arc,
-};
+use std::io::stdout;
 
 use aes::{Aes128, cipher::KeyInit};
+use anyhow::Result;
 use base64::Engine;
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
@@ -13,12 +10,13 @@ use crossterm::{
     style::Print,
     terminal::{Clear, ClearType},
 };
+use tokio::sync::mpsc::Sender;
 
 use crate::crypto::{aes_cbc, diffie_hellman::*};
 
 pub struct Terminal {
     pub name: String,
-    pub stream: Arc<TcpStream>,
+    pub tx: Option<Sender<String>>,
     pub current_writer: Option<String>,
     pub height: u16,
     pub width: u16,
@@ -32,9 +30,9 @@ pub struct Terminal {
     pub ec_point: Point,
 }
 
-impl From<(String, Arc<TcpStream>)> for Terminal {
-    fn from(value: (String, Arc<TcpStream>)) -> Self {
-        let (name, stream) = value;
+impl From<String> for Terminal {
+    fn from(value: String) -> Self {
+        let name = value;
         let (width, height) = crossterm::terminal::size().unwrap();
 
         // Elliptic curve data
@@ -44,7 +42,7 @@ impl From<(String, Arc<TcpStream>)> for Terminal {
 
         Terminal {
             name,
-            stream,
+            tx: None,
             current_writer: None,
             height,
             width,
@@ -166,11 +164,6 @@ impl Terminal {
         .unwrap();
     }
 
-    pub fn send_ec_point(&mut self) {
-        let ec_point = self.ec_point.to_string();
-        write!(self.stream.as_ref(), "{ec_point}\n").unwrap();
-    }
-
     pub fn create_cipher(&mut self, ec_point_string: String) {
         let (x, y) = ec_point_string.split_once(';').unwrap();
 
@@ -186,11 +179,11 @@ impl Terminal {
         self.cipher = Some(Aes128::new(&array));
     }
 
-    fn send_message(&mut self) {
+    async fn send_message(&mut self) -> Result<()> {
         let trimmed = self.input_buffer.trim().to_string();
 
         if trimmed == "" {
-            return;
+            return Ok(());
         }
 
         if let Some(cipher) = &self.cipher {
@@ -200,15 +193,26 @@ impl Terminal {
 
             let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
 
-            let message = format!("{}:{}\n", &self.name, encoded);
+            let mut message = format!("{}:{}", &self.name, encoded);
+
+            // Save message to our own terminal
+            self.save_message(message.clone());
+
+            // Add newline
+            message.push('\n');
 
             // Write message to stream
-            write!(self.stream.as_ref(), "{message}",).unwrap();
+            let Some(tx) = self.tx.as_ref() else {
+                return Ok(());
+            };
+
+            tx.send(message).await?;
 
             // Clear input_buffer
             self.input_buffer.clear();
-            self.draw();
         }
+
+        Ok(())
     }
 
     pub fn save_message(&mut self, message: String) {
@@ -262,10 +266,10 @@ impl Terminal {
         }
     }
 
-    pub fn handle_key_event(&mut self, key_event: KeyEvent) {
+    pub async fn handle_key_event(&mut self, key_event: KeyEvent) -> Result<()> {
         // Ignore key releases
         if key_event.is_release() {
-            return;
+            return Ok(());
         }
 
         match key_event.code {
@@ -287,13 +291,15 @@ impl Terminal {
             }
             KeyCode::Enter => {
                 // Send message to server
-                self.send_message();
+                self.send_message().await?;
                 self.draw();
             }
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),
             _ => {}
         }
+
+        Ok(())
     }
 
     pub fn handle_resize(&mut self, new_width: u16, new_height: u16) {

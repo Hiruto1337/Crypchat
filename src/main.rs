@@ -2,62 +2,39 @@ pub mod crypto;
 pub mod misc;
 
 use std::{
-    io::{BufRead, BufReader, Write, stdout},
-    net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex, RwLock},
-    thread,
+    io::stdout,
+    sync::{Arc, Mutex},
 };
 
+use anyhow::{Context, Result};
 use crossterm::{cursor::EnableBlinking, event::Event, execute};
+use iroh::{Endpoint, EndpointId, endpoint::presets};
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::misc::terminal::Terminal;
 
-fn start_server_tunnel(addr: String) {
-    let clients: Arc<RwLock<Vec<(String, Arc<TcpStream>)>>> = Arc::new(RwLock::new(vec![]));
+const ALPN: &[u8] = b"crypchat";
 
-    // Start listening for connections
-    let listener = TcpListener::bind(addr).unwrap();
+#[tokio::main]
+async fn main() -> Result<()> {
+    let mut args = std::env::args().skip(1);
 
-    // Create a loop that handles new connections
-    loop {
-        let Ok((tcp_stream, soc_addr)) = listener.accept() else {
-            println!("Connection attempt failed...");
-            continue;
-        };
-
-        println!("{soc_addr} connected!");
-
-        // Wrap the stream in an Arc<>
-        let stream = Arc::new(tcp_stream);
-
-        // Add stream to server clients
-        clients
-            .write()
-            .unwrap()
-            .push((soc_addr.to_string(), stream.clone()));
-
-        let clients = clients.clone();
-
-        // Create a thread that listens for input from stream and broadcasts it to all clients
-        thread::spawn(move || {
-            let reader = BufReader::new(stream.as_ref());
-
-            for line in reader.lines() {
-                match line {
-                    Ok(msg) => {
-                        println!("{msg}");
-                        clients.write().unwrap().iter().for_each(|client| {
-                            writeln!(client.1.as_ref(), "{msg}").unwrap();
-                        });
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
+    match (args.next(), args.next()) {
+        (Some(name), None) => start_client(name, None).await?,
+        (Some(name), Some(peer_id)) => {
+            let peer_endpoint: EndpointId = peer_id.parse()?;
+            start_client(name, Some(peer_endpoint)).await?
+        },
+        _ => {
+            println!("Error: Must provide arguments \"[name] [peer_id?]\"");
+            return Ok(());
+        }
     }
+
+    Ok(())
 }
 
-fn start_client(addr: String, name: String) {
+async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
     // Enter raw mode and take full control of scrolling behavior
     crossterm::terminal::enable_raw_mode().unwrap();
     execute!(
@@ -67,71 +44,91 @@ fn start_client(addr: String, name: String) {
     )
     .unwrap();
 
-    // Connect to the server
-    let stream = Arc::new(TcpStream::connect(addr).unwrap());
-
     // Create the terminal representative
-    let terminal = Arc::new(Mutex::new(Terminal::from((name, stream))));
+    let terminal = Arc::new(Mutex::new(Terminal::from(name)));
 
     // Draw initial UI
     terminal.lock().unwrap().draw();
 
+    // Connect to the p2p network
+    let ep = Endpoint::builder(presets::N0)
+        .alpns(vec![ALPN.to_vec()])
+        .bind()
+        .await?;
+
+    ep.online().await;
+
+    eprintln!("{}", ep.id());
+
+    let (mut write_stream, read_stream) = if let Some(peer_id) = peer_id {
+        let conn = ep.connect(peer_id, ALPN).await?;
+        let (write_stream, read_stream) = conn.open_bi().await?;
+        (write_stream, read_stream)
+    } else {
+        let conn = ep.accept().await.context("Accept failed")?.await?;
+        let (write_stream, read_stream) = conn.accept_bi().await?;
+        (write_stream, read_stream)
+    };
+
+    println!("Connection established!");
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1024);
+    terminal.lock().unwrap().tx = Some(tx.clone());
+
+    // Use a single centralized thread to send messages
+    tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            write_stream.write_all(message.as_bytes()).await.unwrap();
+        }
+    });
+
+    // TODO: Only accept peer with appropriate ID
+
     // Create thread that reacts to incoming data
     let terminal_clone = terminal.clone();
-    thread::spawn(move || {
-        let read_stream = terminal_clone.lock().unwrap().stream.clone();
-        let reader = BufReader::new(read_stream.as_ref());
+    let tx_clone = tx.clone();
 
-        for line in reader.lines() {
-            let Ok(incoming) = line else {
-                continue;
+    tokio::spawn(async move {
+        let reader = BufReader::new(read_stream);
+        let mut lines = reader.lines();
+
+        while let Ok(Some(line)) = lines.next_line().await {
+            let response = {
+                let mut lock = terminal_clone.lock().unwrap();
+
+                if lock.cipher.is_some() {
+                    // Save message
+                    lock.save_message(line);
+                    None
+                } else if line != lock.ec_point.to_string() {
+                    // If incoming EC point is not my own
+                    // Create cipher and reciprocate my own EC point
+                    lock.create_cipher(line);
+                    Some(lock.ec_point.to_string() + "\n")
+                } else {
+                    None
+                }
             };
 
-            let mut lock = terminal_clone.lock().unwrap();
-
-            // Save message (if cipher exists)
-            if lock.cipher.is_some() {
-                lock.save_message(incoming);
-                continue;
-            }
-
-            // If incoming EC point is not my own
-            if incoming != lock.ec_point.to_string() {
-                // Create cipher and reciprocate my own EC point
-                lock.create_cipher(incoming);
-                lock.send_ec_point();
+            if let Some(ec_point) = response {
+                tx_clone.send(ec_point).await.unwrap();
             }
         }
     });
 
-    // Announce elliptic curve point to server
-    terminal.lock().unwrap().send_ec_point();
+    // Announce elliptic curve point to peer
+    let ec_point = terminal.lock().unwrap().ec_point.to_string() + "\n";
+    tx.send(ec_point).await.unwrap();
 
     // Listen for events...
     loop {
         let event = crossterm::event::read();
         let mut lock = terminal.lock().unwrap();
         match event {
-            Ok(Event::Key(key_event)) => lock.handle_key_event(key_event),
+            Ok(Event::Key(key_event)) => lock.handle_key_event(key_event).await?,
             Ok(Event::Resize(new_width, new_height)) => lock.handle_resize(new_width, new_height),
             Ok(Event::Mouse(mouse_event)) => lock.handle_mouse_event(mouse_event),
             _ => {}
-        }
-    }
-}
-
-fn main() {
-    let mut args = std::env::args().skip(1);
-
-    match (args.next(), args.next()) {
-        (Some(addr), None) => {
-            start_server_tunnel(addr);
-        }
-        (Some(addr), Some(name)) => {
-            start_client(addr, name);
-        }
-        _ => {
-            println!("Error: Arguments must be \"[address] [name?]\"");
         }
     }
 }
