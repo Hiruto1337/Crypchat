@@ -186,31 +186,40 @@ impl Terminal {
             return Ok(());
         }
 
-        if let Some(cipher) = &self.cipher {
-            let bytes: Vec<u8> = trimmed.into_bytes();
-
-            let encrypted = aes_cbc::encrypt(&bytes, cipher);
-
-            let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
-
-            let mut message = format!("{}:{}", &self.name, encoded);
-
-            // Save message to our own terminal
-            self.save_message(message.clone());
-
-            // Add newline
-            message.push('\n');
-
-            // Write message to stream
-            let Some(tx) = self.tx.as_ref() else {
-                return Ok(());
-            };
-
-            tx.send(message).await?;
-
-            // Clear input_buffer
+        if trimmed == "/status" {
             self.input_buffer.clear();
+            self.draw();
+            self.tx.as_ref().unwrap().send("/status".to_string()).await?;
+            return Ok(());
         }
+
+        let Some(cipher) = &self.cipher else {
+            return Ok(());
+        };
+
+        let bytes: Vec<u8> = trimmed.into_bytes();
+        let encrypted = aes_cbc::encrypt(&bytes, cipher);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(encrypted);
+
+        let mut message = format!("{}:{}", &self.name, encoded);
+
+        // Save message to our own terminal
+        self.save_message(message.clone());
+
+        // Add newline
+        message.push('\n');
+
+        // Write message to stream
+        let Some(tx) = self.tx.as_ref() else {
+            return Ok(());
+        };
+
+        tx.send(message).await?;
+
+        // Clear input_buffer
+        self.input_buffer.clear();
+
+        self.draw();
 
         Ok(())
     }
@@ -290,9 +299,8 @@ impl Terminal {
                 }
             }
             KeyCode::Enter => {
-                // Send message to server
+                // Send message
                 self.send_message().await?;
-                self.draw();
             }
             KeyCode::Up => self.scroll_up(),
             KeyCode::Down => self.scroll_down(),

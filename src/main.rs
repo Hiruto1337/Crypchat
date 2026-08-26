@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use crossterm::{cursor::EnableBlinking, event::Event, execute};
+use crossterm::{cursor::EnableBlinking, event::Event, execute, style::Print};
 use iroh::{Endpoint, EndpointId, endpoint::presets};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -58,19 +58,19 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
 
     ep.online().await;
 
-    eprintln!("{}", ep.id());
+    execute!(stdout(), Print(ep.id().to_string())).unwrap();
 
-    let (mut write_stream, read_stream) = if let Some(peer_id) = peer_id {
+    let (conn, mut write_stream, read_stream) = if let Some(peer_id) = peer_id {
         let conn = ep.connect(peer_id, ALPN).await?;
         let (write_stream, read_stream) = conn.open_bi().await?;
-        (write_stream, read_stream)
+        (conn, write_stream, read_stream)
     } else {
         let conn = ep.accept().await.context("Accept failed")?.await?;
         let (write_stream, read_stream) = conn.accept_bi().await?;
-        (write_stream, read_stream)
+        (conn, write_stream, read_stream)
     };
 
-    println!("Connection established!");
+    execute!(stdout(), Print("Connection established!")).unwrap();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1024);
     terminal.lock().unwrap().tx = Some(tx.clone());
@@ -78,6 +78,22 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
     // Use a single centralized thread to send messages
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
+            if message == "/status" {
+                for path in &conn.paths() {
+                    if path.is_selected() == false {
+                        continue;
+                    }
+
+                    if path.is_ip() {
+                        execute!(stdout(), Print("👤⇄👤")).unwrap();
+                        break;
+                    } else if path.is_relay() {
+                        execute!(stdout(), Print("👤⇄📻⇄👤")).unwrap();
+                        break;
+                    }
+                }
+                continue;
+            }
             write_stream.write_all(message.as_bytes()).await.unwrap();
         }
     });
