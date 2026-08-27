@@ -3,11 +3,11 @@ pub mod misc;
 
 use std::{
     io::stdout,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex}, thread::sleep, time::Duration,
 };
 
 use anyhow::{Context, Result};
-use crossterm::{cursor::EnableBlinking, event::Event, execute, style::Print};
+use crossterm::{cursor::{EnableBlinking, MoveLeft, MoveRight, MoveToColumn}, event::Event, execute, style::Print};
 use iroh::{Endpoint, EndpointId, endpoint::presets};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -47,18 +47,41 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
     // Create the terminal representative
     let terminal = Arc::new(Mutex::new(Terminal::from(name)));
 
-    // Draw initial UI
+    // Draw initial UI⠤
     terminal.lock().unwrap().draw();
 
+    execute!(stdout(), MoveToColumn(0), Print("Connection: ")).unwrap();
+
     // Connect to the p2p network
-    let ep = Endpoint::builder(presets::N0)
+    let ep: Endpoint = Endpoint::builder(presets::N0)
         .alpns(vec![ALPN.to_vec()])
         .bind()
         .await?;
 
-    ep.online().await;
+    // Wait until user is connected
+    {
+        let animation_read = Arc::new(Mutex::new(true));
+        let animation_write = animation_read.clone();
 
-    execute!(stdout(), Print(ep.id().to_string())).unwrap();
+        let loading_animation = std::thread::spawn(move || {
+            let mut animation = "⠋⠙⠸⢰⣠⣄⡆⠇".chars().cycle();
+            execute!(stdout(), MoveRight(1)).unwrap();
+
+            loop {
+                if *animation_read.lock().unwrap() == false {
+                    break;
+                }
+                execute!(stdout(), MoveLeft(1), Print(animation.next().unwrap())).unwrap();
+                sleep(Duration::from_millis(125));
+            }
+        });
+
+        ep.online().await;
+        *animation_write.lock().unwrap() = false;
+        loading_animation.join().unwrap();
+    }
+
+    execute!(stdout(), MoveLeft(1), Print(ep.id().to_string())).unwrap();
 
     let (conn, mut write_stream, read_stream) = if let Some(peer_id) = peer_id {
         let conn = ep.connect(peer_id, ALPN).await?;
@@ -70,7 +93,7 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
         (conn, write_stream, read_stream)
     };
 
-    execute!(stdout(), Print("Connection established!")).unwrap();
+    terminal.lock().unwrap().draw();
 
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(1024);
     terminal.lock().unwrap().tx = Some(tx.clone());
