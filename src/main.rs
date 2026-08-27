@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use crossterm::{cursor::{EnableBlinking, MoveLeft, MoveRight, MoveToColumn}, event::Event, execute, style::Print};
+use crossterm::{cursor::{EnableBlinking, Hide, MoveLeft, MoveToColumn, Show}, event::Event, execute, style::Print};
 use iroh::{Endpoint, EndpointId, endpoint::presets};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -39,8 +39,7 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
     crossterm::terminal::enable_raw_mode().unwrap();
     execute!(
         stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        EnableBlinking
+        crossterm::terminal::EnterAlternateScreen
     )
     .unwrap();
 
@@ -50,7 +49,7 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
     // Draw initial UI⠤
     terminal.lock().unwrap().draw();
 
-    execute!(stdout(), MoveToColumn(0), Print("Connection: ")).unwrap();
+    execute!(stdout(), MoveToColumn(0), Print("Connection: "), Hide).unwrap();
 
     // Connect to the p2p network
     let ep: Endpoint = Endpoint::builder(presets::N0)
@@ -65,13 +64,9 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
 
         let loading_animation = std::thread::spawn(move || {
             let mut animation = "⠋⠙⠸⢰⣠⣄⡆⠇".chars().cycle();
-            execute!(stdout(), MoveRight(1)).unwrap();
 
-            loop {
-                if *animation_read.lock().unwrap() == false {
-                    break;
-                }
-                execute!(stdout(), MoveLeft(1), Print(animation.next().unwrap())).unwrap();
+            while *animation_read.lock().unwrap() {
+                execute!(stdout(), Print(animation.next().unwrap()), MoveLeft(1)).unwrap();
                 sleep(Duration::from_millis(125));
             }
         });
@@ -81,7 +76,7 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
         loading_animation.join().unwrap();
     }
 
-    execute!(stdout(), MoveLeft(1), Print(ep.id().to_string())).unwrap();
+    execute!(stdout(), Print(ep.id().to_string())).unwrap();
 
     let (conn, mut write_stream, read_stream) = if let Some(peer_id) = peer_id {
         let conn = ep.connect(peer_id, ALPN).await?;
@@ -92,6 +87,8 @@ async fn start_client(name: String, peer_id: Option<EndpointId>) -> Result<()> {
         let (write_stream, read_stream) = conn.accept_bi().await?;
         (conn, write_stream, read_stream)
     };
+
+    execute!(stdout(), Show, EnableBlinking).unwrap();
 
     terminal.lock().unwrap().draw();
 
