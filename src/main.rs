@@ -50,14 +50,19 @@ async fn main() -> Result<()> {
 
     // Decide caller and receiver based on peer ID
     let smallest_id = ep.id().to_string() < peer_id.to_string();
-    let (conn, mut write_stream, read_stream);
-    
-    loop {
+
+    let (conn, mut write_stream, read_stream) = loop {
         let conn_ = if smallest_id {
             ep.accept().await.context("Accept failed")?.await?
         } else {
             ep.connect(peer_id, ALPN).await?
         };
+
+        // If the connection isn't from the expected peer, abort
+        if conn_.remote_id() != peer_id {
+            conn_.close(1u8.into(), b"Unauthorized");
+            continue;
+        }
 
         let (write_stream_, read_stream_) = if smallest_id {
             conn_.accept_bi().await?
@@ -65,14 +70,8 @@ async fn main() -> Result<()> {
             conn_.open_bi().await?
         };
 
-        // Only accept peer with appropriate ID
-        if conn_.remote_id().to_string() == peer_id.to_string() {
-            conn = conn_;
-            write_stream = write_stream_;
-            read_stream = read_stream_;
-            break;
-        }
-    }
+        break (conn_, write_stream_, read_stream_);
+    };
 
     // Kill loading animation
     kill.store(true, Relaxed);
