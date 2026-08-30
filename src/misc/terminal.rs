@@ -26,7 +26,7 @@ pub struct Terminal {
     pub input_buffer: String,
     pub scroll: usize,
     pub cipher: Option<Aes128>,
-    pub secret_number: U576,
+    pub secret_number: Option<U576>,
     pub ec_point: Point,
 }
 
@@ -52,7 +52,7 @@ impl From<String> for Terminal {
             input_buffer: String::new(),
             scroll: 0,
             cipher: None,
-            secret_number,
+            secret_number: Some(secret_number),
             ec_point,
         }
     }
@@ -169,7 +169,7 @@ impl Terminal {
 
         let received_ec_point = Point::from((x, y));
         let secret_shared_point =
-            get_elliptic_curve().get_point_from(received_ec_point, self.secret_number);
+            get_elliptic_curve().get_point_from(received_ec_point, self.secret_number.take().unwrap());
         let x = secret_shared_point.get_x();
 
         let mut key: [u8; 16] = [0; 16];
