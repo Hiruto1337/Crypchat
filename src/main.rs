@@ -3,27 +3,20 @@ pub mod misc;
 
 use std::{
     io::stdout,
-    sync::{Arc, Mutex, atomic::Ordering::Relaxed}
+    sync::{Arc, Mutex}
 };
 
 use anyhow::{Context, Result};
 use crossterm::{cursor::{EnableBlinking, Hide, Show}, event::Event, execute, style::Print};
 use iroh::{Endpoint, EndpointId, endpoint::presets};
 
-use crate::misc::{terminal::Terminal, threads::{spawn_reader, spawn_writer, spawn_loader}};
+use crate::misc::{terminal::Terminal, threads::{spawn_reader, spawn_writer, LoadingAnimation}};
 
 macro_rules! load {
     ($($code:tt)*) => {
-        // Start animation thread
-        let (animation, kill) = spawn_loader();
-
-        // Insert code
+        let load_animation = LoadingAnimation::new();
         $($code)*
-
-        // Kill animation thread
-        kill.store(true, Relaxed);
-        animation.join().unwrap();
-        drop(kill);
+        load_animation.kill();
     };
 }
 

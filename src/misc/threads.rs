@@ -6,6 +6,35 @@ use tokio::{io::{AsyncBufReadExt, BufReader}, sync::mpsc::{Receiver, Sender}};
 
 use crate::misc::terminal::Terminal;
 
+pub struct LoadingAnimation {
+    thread_handle: JoinHandle<()>,
+    kill: Arc<AtomicBool>
+}
+
+impl LoadingAnimation {
+    pub fn new() -> Self {
+    let kill = Arc::new(AtomicBool::new(false));
+    let killer = kill.clone();
+
+    // Spawn animation thread
+    let animation = std::thread::spawn(move || {
+        let mut animation = "⠋⠙⠸⢰⣠⣄⡆⠇".chars().cycle();
+
+        while kill.load(std::sync::atomic::Ordering::Relaxed) == false {
+            execute!(stdout(), Print(animation.next().unwrap()), MoveLeft(1)).unwrap();
+            sleep(Duration::from_millis(125));
+        }
+    });
+
+    LoadingAnimation { thread_handle: animation, kill: killer }
+    }
+
+    pub fn kill(self) {
+        self.kill.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.thread_handle.join().unwrap();
+    }
+}
+
 pub fn spawn_writer(conn: Connection, mut write_stream: SendStream, mut rx: Receiver<String>) {
     tokio::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -58,21 +87,4 @@ pub fn spawn_reader(read_stream: RecvStream, terminal: Arc<Mutex<Terminal>>, tx:
             }
         }
     });
-}
-
-pub fn spawn_loader() -> (JoinHandle<()>, Arc<AtomicBool>) {
-    let kill = Arc::new(AtomicBool::new(false));
-    let killer = kill.clone();
-
-    // Spawn animation thread
-    let animation = std::thread::spawn(move || {
-        let mut animation = "⠋⠙⠸⢰⣠⣄⡆⠇".chars().cycle();
-
-        while kill.load(std::sync::atomic::Ordering::Relaxed) == false {
-            execute!(stdout(), Print(animation.next().unwrap()), MoveLeft(1)).unwrap();
-            sleep(Duration::from_millis(125));
-        }
-    });
-
-    (animation, killer)
 }
