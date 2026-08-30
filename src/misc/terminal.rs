@@ -242,11 +242,7 @@ impl Terminal {
 
         let decrypted = String::from_utf8(clean_decrypted_vec).unwrap();
 
-        if let Some(msg_sender) = &self.current_writer
-            && &sender == msg_sender
-        {
-            // Do nothing
-        } else {
+        if self.current_writer.as_ref().is_none_or(|msg_sender| msg_sender != sender) {
             self.current_writer = Some(sender.to_string());
             let color = if &sender == &self.name {
                 "\x1b[1;32m" // Set color to green

@@ -87,14 +87,14 @@ async fn main() -> Result<()> {
     crossterm::terminal::enable_raw_mode().unwrap();
     execute!(
         stdout(),
-        crossterm::terminal::EnterAlternateScreen
+        crossterm::terminal::EnterAlternateScreen,
+        Show,
+        EnableBlinking
     )
     .unwrap();
 
     // Create the terminal representative
     let terminal = Arc::new(Mutex::new(Terminal::from(name)));
-
-    execute!(stdout(), Show, EnableBlinking).unwrap();
 
     // Draw initial UI
     terminal.lock().unwrap().draw();
