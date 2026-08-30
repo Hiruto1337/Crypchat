@@ -3,42 +3,40 @@ pub mod misc;
 
 use std::{
     io::stdout,
-    sync::{Arc, Mutex, atomic::{AtomicBool, Ordering::Relaxed}}, thread::sleep, time::Duration,
+    sync::{Arc, Mutex, atomic::Ordering::Relaxed}
 };
 
 use anyhow::{Context, Result};
-use crossterm::{cursor::{EnableBlinking, Hide, MoveLeft, Show}, event::Event, execute, style::Print};
-use iroh::{Endpoint, EndpointId, endpoint::{Connection, RecvStream, SendStream, presets}};
-use tokio::{io::{AsyncBufReadExt, BufReader}, sync::mpsc::{Receiver, Sender}};
+use crossterm::{cursor::{EnableBlinking, Hide, Show}, event::Event, execute, style::Print};
+use iroh::{Endpoint, EndpointId, endpoint::presets};
 
-use crate::misc::terminal::Terminal;
+use crate::misc::{terminal::Terminal, threads::{spawn_reader, spawn_writer, spawn_loader}};
 
 macro_rules! load {
     ($($code:tt)*) => {
-        let kill = Arc::new(AtomicBool::new(false));
-        let killer = kill.clone();
+        // Start animation thread
+        let (animation, kill) = spawn_loader();
 
-        // Spawn animation thread
-        let animation = std::thread::spawn(move || {
-            let mut animation = "⠋⠙⠸⢰⣠⣄⡆⠇".chars().cycle();
-
-            while kill.load(Relaxed) == false {
-                execute!(stdout(), Print(animation.next().unwrap()), MoveLeft(1)).unwrap();
-                sleep(Duration::from_millis(125));
-            }
-        });
-
-        // Code
+        // Insert code
         $($code)*
 
         // Kill animation thread
-        killer.store(true, Relaxed);
+        kill.store(true, Relaxed);
         animation.join().unwrap();
-        drop(killer);
+        drop(kill);
     };
 }
 
 const ALPN: &[u8] = b"crypchat";
+
+fn get_input(prompt: &str) -> String {
+    execute!(stdout(), Print(format!("{}", prompt))).unwrap();
+
+    let mut buffer = String::new();
+    std::io::stdin().read_line(&mut buffer).unwrap();
+    buffer.pop().unwrap();
+    buffer
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -132,67 +130,4 @@ async fn main() -> Result<()> {
             _ => {}
         }
     }
-}
-
-fn get_input(prompt: &str) -> String {
-    execute!(stdout(), Print(format!("{}", prompt))).unwrap();
-
-    let mut buffer = String::new();
-    std::io::stdin().read_line(&mut buffer).unwrap();
-    buffer.pop().unwrap();
-    buffer
-}
-
-fn spawn_writer(conn: Connection, mut write_stream: SendStream, mut rx: Receiver<String>) {
-    tokio::spawn(async move {
-        while let Some(message) = rx.recv().await {
-            if message == "/status" {
-                for path in &conn.paths() {
-                    if path.is_selected() == false {
-                        continue;
-                    }
-
-                    if path.is_ip() {
-                        execute!(stdout(), Print("👤⇄👤")).unwrap();
-                        break;
-                    } else if path.is_relay() {
-                        execute!(stdout(), Print("👤⇄📻⇄👤")).unwrap();
-                        break;
-                    }
-                }
-                continue;
-            }
-            write_stream.write_all(message.as_bytes()).await.unwrap();
-        }
-    });
-}
-
-fn spawn_reader(read_stream: RecvStream, terminal: Arc<Mutex<Terminal>>, tx: Sender<String>) {
-    tokio::spawn(async move {
-        let reader = BufReader::new(read_stream);
-        let mut lines = reader.lines();
-
-        while let Ok(Some(line)) = lines.next_line().await {
-            let response = {
-                let mut lock = terminal.lock().unwrap();
-
-                if lock.cipher.is_some() {
-                    // Save message
-                    lock.save_message(line);
-                    None
-                } else if line != lock.ec_point.to_string() {
-                    // If incoming EC point is not my own
-                    // Create cipher and reciprocate my own EC point
-                    lock.create_cipher(line);
-                    Some(lock.ec_point.to_string() + "\n")
-                } else {
-                    None
-                }
-            };
-
-            if let Some(ec_point) = response {
-                tx.send(ec_point).await.unwrap();
-            }
-        }
-    });
 }
