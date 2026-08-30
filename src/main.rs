@@ -115,9 +115,7 @@ async fn main() -> Result<()> {
     spawn_writer(conn, write_stream, rx);
 
     // Create thread that reacts to incoming data
-    let terminal_clone = terminal.clone();
-    let tx_clone = tx.clone();
-    spawn_reader(read_stream, terminal_clone, tx_clone);
+    spawn_reader(read_stream, terminal.clone(), tx.clone());
 
     // Announce elliptic curve point to peer
     let ec_point = terminal.lock().unwrap().ec_point.to_string() + "\n";
