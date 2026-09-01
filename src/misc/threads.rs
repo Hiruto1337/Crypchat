@@ -1,6 +1,6 @@
 use std::{io::stdout, sync::{Arc, Mutex, atomic::AtomicBool}, thread::{JoinHandle, sleep}, time::Duration};
 
-use crossterm::{cursor::MoveLeft, execute, style::Print};
+use crossterm::{cursor::{Hide, MoveLeft, Show}, execute, style::Print};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
 use tokio::{io::{AsyncBufReadExt, BufReader}, sync::mpsc::{Receiver, Sender}};
 
@@ -20,10 +20,12 @@ impl LoadingAnimation {
     let animation = std::thread::spawn(move || {
         let mut animation = "⠋⠙⠸⢰⣠⣄⡆⠇".chars().cycle();
 
+        execute!(stdout(), Hide).unwrap();
         while kill.load(std::sync::atomic::Ordering::Relaxed) == false {
             execute!(stdout(), Print(animation.next().unwrap()), MoveLeft(1)).unwrap();
             sleep(Duration::from_millis(125));
         }
+        execute!(stdout(), Show).unwrap();
     });
 
     LoadingAnimation { thread_handle: animation, kill: killer }

@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use crossterm::{cursor::{EnableBlinking, Hide, Show}, event::Event, execute, style::Print};
+use crossterm::{cursor::EnableBlinking, event::Event, execute, style::Print};
 use iroh::{Endpoint, EndpointId, endpoint::presets};
 
 use crate::misc::{terminal::Terminal, threads::{spawn_reader, spawn_writer, LoadingAnimation}};
@@ -37,7 +37,7 @@ async fn main() -> Result<()> {
     let name = get_input("Display name: ");
     
     // Go online and display peer ID
-    execute!(stdout(), Print("My peer ID: "), Hide).unwrap();
+    execute!(stdout(), Print("My peer ID: ")).unwrap();
 
     load!{
         let ep: Endpoint = Endpoint::builder(presets::N0)
@@ -88,7 +88,6 @@ async fn main() -> Result<()> {
     execute!(
         stdout(),
         crossterm::terminal::EnterAlternateScreen,
-        Show,
         EnableBlinking
     )
     .unwrap();
