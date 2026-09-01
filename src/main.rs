@@ -9,6 +9,7 @@ use std::{
 use anyhow::{Context, Result};
 use crossterm::{cursor::EnableBlinking, event::Event, execute, style::Print};
 use iroh::{Endpoint, EndpointId, endpoint::presets};
+use tokio::sync::mpsc::channel;
 
 use crate::misc::{terminal::Terminal, threads::{spawn_reader, spawn_writer, LoadingAnimation}};
 
@@ -93,13 +94,11 @@ async fn main() -> Result<()> {
     .unwrap();
 
     // Create the terminal representative
-    let terminal = Arc::new(Mutex::new(Terminal::from(name)));
+    let (tx, rx) = channel::<String>(1024);
+    let terminal = Arc::new(Mutex::new(Terminal::from((name, tx.clone()))));
 
     // Draw initial UI
     terminal.lock().unwrap().draw();
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(1024);
-    terminal.lock().unwrap().tx = Some(tx.clone());
 
     // Use a single centralized thread to send messages
     spawn_writer(conn, write_stream, rx);

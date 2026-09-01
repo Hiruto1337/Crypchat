@@ -16,7 +16,7 @@ use crate::crypto::{aes_cbc, diffie_hellman::*};
 
 pub struct Terminal {
     pub name: String,
-    pub tx: Option<Sender<String>>,
+    pub tx: Sender<String>,
     pub current_writer: Option<String>,
     pub height: u16,
     pub width: u16,
@@ -30,9 +30,9 @@ pub struct Terminal {
     pub ec_point: Point,
 }
 
-impl From<String> for Terminal {
-    fn from(value: String) -> Self {
-        let name = value;
+impl From<(String, Sender<String>)> for Terminal {
+    fn from(value: (String, Sender<String>)) -> Self {
+        let (name, tx) = value;
         let (width, height) = crossterm::terminal::size().unwrap();
 
         // Elliptic curve data
@@ -42,7 +42,7 @@ impl From<String> for Terminal {
 
         Terminal {
             name,
-            tx: None,
+            tx,
             current_writer: None,
             height,
             width,
@@ -189,7 +189,7 @@ impl Terminal {
         if trimmed == "/status" {
             self.input_buffer.clear();
             self.draw();
-            self.tx.as_ref().unwrap().send("/status".to_string()).await?;
+            self.tx.send("/status".to_string()).await?;
             return Ok(());
         }
 
@@ -210,11 +210,7 @@ impl Terminal {
         message.push('\n');
 
         // Write message to stream
-        let Some(tx) = self.tx.as_ref() else {
-            return Ok(());
-        };
-
-        tx.send(message).await?;
+        self.tx.send(message).await?;
 
         // Clear input_buffer
         self.input_buffer.clear();
