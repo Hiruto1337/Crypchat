@@ -75,7 +75,7 @@ impl Terminal {
         let input_x = ("Message: ".len() + self.input_buffer.len()) % self.width as usize;
 
         let input_height = self.get_string_height(&(self.input_buffer.clone() + "Message: "));
-        let input_y = self.height - self.input_height + input_height as u16;
+        let input_y = self.height.checked_sub(self.input_height).unwrap_or(0) + input_height as u16;
 
         (input_x as u16, input_y)
     }
@@ -90,7 +90,7 @@ impl Terminal {
 
     pub fn draw_messages(&mut self) {
         // Track remaining screen estate
-        let output_height = self.height - self.input_height;
+        let output_height = self.height.checked_sub(self.input_height).unwrap_or(0);
         let mut rem_height = output_height + 1;
         let mut rem_scroll = self.scroll;
 
@@ -142,7 +142,7 @@ impl Terminal {
         let (input_x, input_y) = self.get_input_coordinates();
         execute!(
             stdout(),
-            MoveTo(self.width, output_height - 1),
+            MoveTo(self.width, output_height.checked_sub(1).unwrap_or(0)),
             Clear(ClearType::FromCursorUp),
             MoveTo(0, 0),
             Print(output),
@@ -155,7 +155,7 @@ impl Terminal {
         execute!(
             stdout(),
             // Draw separator line
-            MoveTo(0, self.height - self.input_height),
+            MoveTo(0, self.height.checked_sub(self.input_height).unwrap_or(0)),
             Clear(ClearType::FromCursorDown),
             Print((0..self.width).map(|_| '_').collect::<String>()),
             // Draw input area
