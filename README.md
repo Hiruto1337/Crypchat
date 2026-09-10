@@ -4,13 +4,12 @@
 
 # Crypchat
 Crypchat is a terminal-based E2EE P2P chat application. The purpose of this project is to show resistance towards the EU Chat Control initiative while also displaying proficiency in system development and cryptology.
-<!--<div align="center" dir="auto">
-    <img src="./resources/connected.jpg" width="838" />
-</div>-->
 <div align="center" dir="auto">
-    <video width="838">
-        <source src="./resources/recording.mp4" type="video/mp4">
-    </video>
+    <img src="./resources/connected.jpg" width="838" />
+</div>
+
+<div align="center" dir="auto">
+    <img src="./resources/recording.gif" width="838" />
 </div>
 
 ## Engineering
