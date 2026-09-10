@@ -8,6 +8,7 @@ Crypchat is a terminal-based E2EE P2P chat application. The purpose of this proj
     <img src="./resources/connected.jpg" width="838" />
 </div>
 
+## Demo
 <div align="center" dir="auto">
     <img src="./resources/recording.gif" width="838" />
 </div>
